@@ -31,9 +31,10 @@
 namespace {
 
 enum OptionIndex {
-  Hkl=4, Dmin, For, NormalizeIt92, Rate, Blur, RCut, Test, ToMtz, Compare,
-  CifFp, Wavelength, Unknown, NoAniso, Margin, ScaleTo, SigmaCutoff, FLabel,
-  PhiLabel, Ksolv, Bsolv, Baniso, RadiiSet, Rprobe, Rshrink, WriteMap
+  Hkl=4, Dmin, For, NormalizeIt92, UseCharge, Rate, Blur, RCut,
+  Test, WriteMap, ToMtz, Compare, FLabel, PhiLabel,
+  CifFp, Wavelength, Unknown, NoAniso, Margin, ScaleTo, SigmaCutoff,
+  MaskSpacing, RadiiSet, Rprobe, Rshrink, MaskFile, Ksolv, Bsolv, Kov, Baniso
 };
 
 struct SfCalcArg: public Arg {
@@ -84,6 +85,8 @@ const option::Descriptor Usage[] = {
     "  --for=TYPE  \tTYPE is xray (default), electron, neutron or mott-bethe." },
   { NormalizeIt92, 0, "", "normalize-it92", Arg::None,
     "  --normalize-it92  \tNormalize X-ray form factors (a tiny change)." },
+  { UseCharge, 0, "", "use-charge", Arg::None,
+    "  --use-charge  \tUse X-ray form factors with charges when available." },
   { CifFp, 0, "", "ciffp", Arg::None,
     "  --ciffp  \tRead f' from _atom_type_scat_dispersion_real in CIF." },
   { Wavelength, 0, "w", "wavelength", Arg::Float,
@@ -119,17 +122,24 @@ const option::Descriptor Usage[] = {
     "  --sigma-cutoff=NUM  \tUse only data with F/SIGF > NUM (default: 0)." },
   // TODO: solvent option: mask, babinet, none
 
-  { NoOp, 0, "", "", Arg::None, "\nOptions for bulk solvent correction (only w/ FFT):" },
+  { NoOp, 0, "", "", Arg::None,
+    "\nOptions for bulk solvent correction and scaling (only w/ FFT):" },
+  { MaskSpacing, 0, "", "d-mask", Arg::Float,
+    "  --d-mask=NUM  \tSpacing of mask grid (default: same as for model)." },
   { RadiiSet, 0, "", "radii-set", SfCalcArg::Radii,
     "  --radii-set=SET  \tSet of per-element radii, one of: vdw, cctbx, refmac." },
   { Rprobe, 0, "", "r-probe", Arg::Float,
     "  --r-probe=NUM  \tValue added to VdW radius (default: 1.0A)." },
   { Rshrink, 0, "", "r-shrink", Arg::Float,
     "  --r-shrink=NUM  \tValue for shrinking the solvent area (default: 1.1A)." },
+  { MaskFile, 0, "", "solvent-mask", Arg::Required,
+    "  --solvent-mask=FILE  \tUse mask from file instead of calculating it." },
   { Ksolv, 0, "", "ksolv", Arg::Float,
     "  --ksolv=NUM  \tValue (if optimizing: initial value) of k_solv." },
   { Bsolv, 0, "", "bsolv", Arg::Float,
     "  --bsolv=NUM  \tValue (if optimizing: initial value) of B_solv." },
+  { Kov, 0, "", "kov", Arg::Float,
+    "  --kov=NUM  \tValue (if optimizing: initial value) of k_overall." },
   { Baniso, 0, "", "baniso", SfCalcArg::Float6,
     "  --baniso=B11:...:B23 \tAnisotropic scale matrix (6 colon-separated numbers: "
       "B11, B22, B33, B12, B13, B23)." },
@@ -227,7 +237,7 @@ template<typename Table, typename Real>
 void process_with_fft(const gemmi::Structure& st,
                       gemmi::DensityCalculator<Table, Real>& dencalc,
                       bool mott_bethe,
-                      const gemmi::SolventMasker& masker,
+                      const gemmi::AsuData<std::complex<Real>>* mask_data,
                       gemmi::Scaling<Real>& scaling,
                       bool verbose, const RefFile& file,
                       const gemmi::AsuData<gemmi::ValueSigma<Real>>& scale_to,
@@ -239,7 +249,6 @@ void process_with_fft(const gemmi::Structure& st,
   }
   Timer timer(verbose);
   timer.start();
-  dencalc.set_grid_cell_and_spacegroup(st);
   dencalc.put_model_density_on_grid(st.models[0]);
   timer.print("...took");
   if (map_file) {
@@ -281,21 +290,19 @@ void process_with_fft(const gemmi::Structure& st,
   }
   auto asu_data = sf.prepare_asu_data(dencalc.d_min, dencalc.blur, false, false, mott_bethe);
 
-  gemmi::AsuData<std::complex<Real>> mask_data;
-  if (scaling.use_solvent) {
-    // uses scaling.grid as a temporary array
-    masker.put_mask_on_grid(dencalc.grid, st.models[0]);
-    mask_data = transform_map_to_f_phi(dencalc.grid, /*half_l=*/true)
-                .prepare_asu_data(dencalc.d_min, 0);
-  }
-
   if (scale_to.size() != 0) {
-    scaling.prepare_points(asu_data, scale_to, &mask_data);
+    scaling.prepare_points(asu_data, scale_to, mask_data);
     printf("Calculating scale factors using %zu points...\n", scaling.points.size());
-    scaling.fit_isotropic_b_approximately();
-    //fprintf(stderr, "k_ov=%g B_ov=%g\n", scaling.k_overall, scaling.get_b_overall().u11);
-    scaling.fit_parameters();
     gemmi::SMat33<double> b_aniso = scaling.get_b_overall();
+    if (b_aniso.all_zero()) {
+      scaling.fit_isotropic_b_approximately();
+      //fprintf(stderr, "initial k_ov=%g B_ov=%g\n",
+      //        scaling.k_overall, scaling.get_b_overall().u11);
+    } else if (scaling.k_overall == 1.) {
+      scaling.k_overall = scaling.lsq_k_overall();
+      //fprintf(stderr, "initial k_ov=%g\n", scaling.k_overall);
+    }
+    scaling.fit_parameters();
     if (scaling.use_solvent)
       fprintf(stderr, "Bulk solvent parameters: k_sol=%g B_sol=%g\n",
               scaling.k_sol, scaling.b_sol);
@@ -312,7 +319,7 @@ void process_with_fft(const gemmi::Structure& st,
       fprintf(stderr, "\n");
     }
   }
-  scaling.scale_data(asu_data, &mask_data);
+  scaling.scale_data(asu_data, mask_data);
 
   if (file.mode == RefFile::Mode::WriteMtz) {
     write_asudata_to_mtz(asu_data, file);
@@ -519,19 +526,6 @@ void process_with_table(bool use_st, gemmi::Structure& st, const gemmi::SmallStr
   const gemmi::UnitCell& cell = use_st ? st.cell : small.cell;
   gemmi::StructureFactorCalculator<Table> calc(cell);
 
-  // assign f' given explicitly in a file
-  if (p.options[CifFp]) {
-    if (use_st) {
-      // _atom_type.scat_dispersion_real is almost never used,
-      // so for now we ignore it.
-    } else { // small molecule
-      if (p.options[Verbose])
-        fprintf(stderr, "Using f' read from cif file (%u atom types)\n",
-                (unsigned) small.atom_types.size());
-      for (const gemmi::SmallStructure::AtomType& atom_type : small.atom_types)
-        calc.addends.set(atom_type.element, (float)atom_type.dispersion_real);
-    }
-  }
 
   auto present_elems = use_st ? st.models[0].present_elements()
                               : small.present_elements();
@@ -540,12 +534,31 @@ void process_with_table(bool use_st, gemmi::Structure& st, const gemmi::SmallStr
   for (size_t i = 1; i != present_elems.size(); ++i)
     if (present_elems[i] && !Table::has((gemmi::El)i))
       gemmi::fail("Missing form factor for element ", element_name((gemmi::El)i));
-  if (wavelength > 0) {
+
+  if (p.options[CifFp]) { // assign f' given explicitly in a file
+    if (use_st) {
+      // _atom_type.scat_dispersion_real is almost never used,
+      // so for now we ignore it.
+      fprintf(stderr, "WARNING: --ciffp ignored, f' is not read (yet) from mmCIF and PDB.\n");
+    } else { // small molecule
+      if (p.options[Verbose])
+        fprintf(stderr, "Using f' read from cif file (%u atom types)\n",
+                (unsigned) small.atom_types.size());
+      for (const gemmi::SmallStructure::AtomType& atom_type : small.atom_types)
+        calc.addends.set(atom_type.element, (float)atom_type.dispersion_real);
+    }
+  } else if (wavelength > 0) {
+    if (p.options[Verbose])
+      fprintf(stderr, "Wavelength %g A. Using Cromer-Liberman approximation for f'.\n",
+              wavelength);
     double energy = gemmi::hc() / wavelength;
     for (int z = 1; z <= 92; ++z)
       if (present_elems[z] && calc.addends.values[z] == 0) {
         calc.addends.values[z] = (float) gemmi::cromer_liberman(z, energy, nullptr);
       }
+  } else {
+    if (p.options[Verbose])
+      fprintf(stderr, "Unknown wavelength, f' not used.\n");
   }
   if (mott_bethe)
     calc.addends.subtract_z();
@@ -636,6 +649,7 @@ void process_with_table(bool use_st, gemmi::Structure& st, const gemmi::SmallStr
       if (p.options[RCut])
         dencalc.cutoff = (float) std::atof(p.options[RCut].arg);
       dencalc.addends = calc.addends;
+      dencalc.set_grid_cell_and_spacegroup(st);
       if (p.options[Blur]) {
         dencalc.blur = std::atof(p.options[Blur].arg);
       } else if (dencalc.rate < 3) {
@@ -666,6 +680,8 @@ void process_with_table(bool use_st, gemmi::Structure& st, const gemmi::SmallStr
         masker.rprobe = std::atof(p.options[Rprobe].arg);
       if (p.options[Rshrink])
         masker.rshrink = std::atof(p.options[Rshrink].arg);
+      if (p.options[MaskSpacing])
+        masker.requested_spacing = std::atof(p.options[MaskSpacing].arg);
 
       gemmi::Scaling<Real> scaling(cell, st.find_spacegroup());
       if (p.options[Ksolv] || p.options[Bsolv] || scale_to.size() != 0) {
@@ -675,6 +691,8 @@ void process_with_table(bool use_st, gemmi::Structure& st, const gemmi::SmallStr
         if (p.options[Bsolv])
           scaling.b_sol = std::atof(p.options[Bsolv].arg);
       }
+      if (p.options[Kov])
+        scaling.k_overall = std::atof(p.options[Kov].arg);
       if (p.options[Baniso]) {
         char* endptr = nullptr;
         gemmi::SMat33<double> b_aniso;
@@ -687,7 +705,36 @@ void process_with_table(bool use_st, gemmi::Structure& st, const gemmi::SmallStr
         scaling.set_b_overall(b_aniso);
       }
       const char* map_file = p.options[WriteMap] ? p.options[WriteMap].arg : nullptr;
-      process_with_fft(st, dencalc, mott_bethe, masker, scaling,
+
+      // mask's coefficients
+      gemmi::AsuData<std::complex<Real>> mask_data;
+      auto mask_data_ptr = &mask_data;
+      if (scaling.use_solvent) {
+        gemmi::Grid<Real> gr;
+        if (p.options[MaskFile]) {
+          gemmi::Ccp4<Real> ccp4;
+          ccp4.read_ccp4(gemmi::MaybeGzipped(p.options[MaskFile].arg));
+          ccp4.setup(0, gemmi::MapSetup::Full);
+          gr = std::move(ccp4.grid);
+        } else {
+          gr.unit_cell = dencalc.grid.unit_cell;
+          gr.spacegroup = dencalc.grid.spacegroup;
+          double spacing = masker.requested_spacing;
+          if (spacing <= 0)
+            spacing = dencalc.requested_grid_spacing();
+          gr.set_size_from_spacing(spacing, gemmi::GridSizeRounding::Up);
+          masker.put_mask_on_grid(gr, st.models[0]);
+        }
+        if (p.options[Verbose])
+          fprintf(stderr, "Solvent mask: %.1f%% of %d x %d x %d grid.\n",
+                  100. * gr.sum() / gr.point_count(), gr.nu, gr.nv, gr.nw);
+        mask_data = transform_map_to_f_phi(gr, /*half_l=*/true)
+                    .prepare_asu_data(dencalc.d_min, 0);
+      } else {
+        mask_data_ptr = nullptr;
+      }
+
+      process_with_fft(st, dencalc, mott_bethe, mask_data_ptr, scaling,
                        p.options[Verbose], file, scale_to, map_file);
     } else {
       if (p.options[Rate] || p.options[RCut] || p.options[Blur] ||
@@ -805,10 +852,9 @@ void process(const std::string& input, const OptParser& p) {
   if (p.options[CifFp] && table != 'x')
     gemmi::fail("Electron scattering has no dispersive part (--ciffp)");
   if (table == 'x' || table == 'm') {
+    gemmi::IT92<float>::ignore_charge = (table == 'm' || !p.options[UseCharge]);
     if (p.options[NormalizeIt92])
       gemmi::IT92<float>::normalize();
-    if (table == 'm')
-      gemmi::IT92<float>::ignore_charge = true;
     process_with_table<gemmi::IT92<float>>(use_st, st, small, wavelength,
                                            table == 'm', p);
   } else if (table == 'e') {
@@ -824,6 +870,12 @@ int GEMMI_MAIN(int argc, char **argv) {
   OptParser p(EXE_NAME);
   p.simple_parse(argc, argv, Usage);
   p.check_exclusive_group({ToMtz, Test, Compare});
+  if (p.options[MaskFile]) {
+    for (int opt2 : {MaskSpacing, RadiiSet, Rprobe, Rshrink})
+      if (p.options[opt2])
+        std::fprintf(stderr, "WARNING: -%s is ignored when --solvent-mask is given.\n",
+                     p.given_name(opt2));
+  }
   p.require_input_files_as_args();
   try {
     for (int i = 0; i < p.nonOptionsCount(); ++i) {

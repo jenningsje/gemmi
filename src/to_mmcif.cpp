@@ -295,6 +295,13 @@ void write_cell_parameters(const UnitCell& cell, cif::ItemSpan& span) {
   span.set_pair("_cell.angle_gamma", to_str(cell.gamma));
 }
 
+bool is_valid_block_name(const std::string& name) {
+  return !name.empty() &&
+         std::all_of(name.begin(), name.end(), [](char c){ return c >= '!' && c <= '~'; });
+}
+
+} // anonymous namespace
+
 void write_ncs_oper(const Structure& st, cif::Block& block) {
   // _struct_ncs_oper (MTRIX)
   if (st.ncs.empty())
@@ -320,13 +327,6 @@ void write_ncs_oper(const Structure& st, cif::Block& block) {
   for (const NcsOp& op : st.ncs)
     add_op(op);
 }
-
-bool is_valid_block_name(const std::string& name) {
-  return !name.empty() &&
-         std::all_of(name.begin(), name.end(), [](char c){ return c >= '!' && c <= '~'; });
-}
-
-} // anonymous namespace
 
 void write_struct_conn(const Structure& st, cif::Block& block) {
   // example:
@@ -1171,7 +1171,7 @@ void update_mmcif_block(const Structure& st, cif::Block& block, MmcifOutputGroup
 
   if (groups.software && !st.meta.software.empty()) {
     cif::Loop& loop = block.init_mmcif_loop("_software.",
-                 {"pdbx_ordinal", "classification", "name", "version", "date"});
+        {"pdbx_ordinal", "classification", "name", "version", "date", "description"});
     int ordinal = 0;
     for (const SoftwareItem& item : st.meta.software)
       loop.add_row({
@@ -1179,7 +1179,8 @@ void update_mmcif_block(const Structure& st, cif::Block& block, MmcifOutputGroup
           cif::quote(software_classification_to_string(item.classification)),
           cif::quote(item.name),
           string_or_dot(item.version),
-          string_or_qmark(item.date)});
+          string_or_qmark(item.date),
+          string_or_qmark(item.description)});
   }
 }
 

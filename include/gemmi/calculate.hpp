@@ -60,6 +60,19 @@ template<> inline CenterOfMass calculate_center_of_mass(const Atom& atom) {
   return CenterOfMass{Position(atom.pos * w_mass), w_mass};
 }
 
+template<class T> std::pair<float,float> calculate_b_iso_range(const T& obj) {
+  std::pair<float, float> range{INFINITY, -INFINITY};
+  for (const auto& child : obj.children()) {
+    auto r = calculate_b_iso_range(child);
+    range.first = std::min(range.first, r.first);
+    range.second = std::max(range.second, r.second);
+  }
+  return range;
+}
+template<> inline std::pair<float,float> calculate_b_iso_range(const Atom& atom) {
+  return {atom.b_iso, atom.b_iso};
+}
+
 template<class T> void expand_box(const T& obj, Box<Position>& box) {
   for (const auto& child : obj.children())
     expand_box(child, box);
@@ -78,6 +91,8 @@ inline Box<Position> calculate_box(const Structure& st, double margin=0.) {
 }
 
 inline Box<Fractional> calculate_fractional_box(const Structure& st, double margin=0.) {
+  if (!st.cell.is_crystal())
+    fail("calculate_fractional_box(): Structure has no unit cell for fractionalization");
   Box<Fractional> box;
   for (const Model& model : st.models)
     for (const Chain& chain : model.chains)

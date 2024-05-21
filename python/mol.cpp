@@ -166,6 +166,7 @@ void add_mol(py::module& m) {
     .def("ensure_entities", &ensure_entities)
     .def("deduplicate_entities", &deduplicate_entities)
     .def("setup_entities", &setup_entities)
+    .def("assign_het_flags", assign_het_flags<Structure>, py::arg("flag")='R')
     .def("remove_waters", remove_waters<Structure>)
     .def("remove_ligands_and_waters", remove_ligands_and_waters<Structure>)
     .def("shorten_ccd_codes", &shorten_ccd_codes)
@@ -267,6 +268,7 @@ void add_mol(py::module& m) {
     .def("calculate_center_of_mass", [](const Model& self) {
         return calculate_center_of_mass(self).get();
     })
+    .def("calculate_b_iso_range", &calculate_b_iso_range<Model>)
     .def("transform_pos_and_adp", transform_pos_and_adp<Model>, py::arg("tr"))
     .def("split_chains_by_segments", &split_chains_by_segments)
     .def("clone", [](const Model& self) { return new Model(self); })
@@ -474,6 +476,7 @@ void add_mol(py::module& m) {
     .def("is_water", &Residue::is_water)
     .def("remove_hydrogens", &remove_hydrogens<Residue>)
     .def("trim_to_alanine", (bool (*)(Residue&)) &trim_to_alanine)
+    .def("recommended_het_flag", &recommended_het_flag)
     .def("clone", [](const Residue& self) { return new Residue(self); })
     .def("__repr__", [](const Residue& self) {
         return cat("<gemmi.Residue ", self.str(), " with ", self.atoms.size(), " atoms>");

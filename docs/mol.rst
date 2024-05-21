@@ -94,9 +94,7 @@ together with the unit cell and symmetry.
     >>> SiC.cell
     <gemmi.UnitCell(4.358, 4.358, 4.358, 90, 90, 90)>
     >>> # content of _symmetry_space_group_name_H-M or _space_group_name_H-M_alt
-    >>> SiC.spacegroup_hm
-    'F -4 3 m'
-    >>> SiC.find_spacegroup()  # based on spacegroup_hm
+    >>> SiC.spacegroup
     <gemmi.SpaceGroup("F -4 3 m")>
     >>> list(SiC.sites)
     [<gemmi.SmallStructure.Site Si1>, <gemmi.SmallStructure.Site C1>]
@@ -173,25 +171,95 @@ Alternatively, the same can be done in two steps:
     >>> SiC = gemmi.make_small_structure_from_block(cif_doc.sole_block())
 
 Now you also have access to the CIF document.
-Let's use it to obtain SpaceGroup from the symmetry operators
-and check if it is consistent with the H-M name.
+
+.. _small_spacegroup:
+
+SmallStructure::spacegroup
+--------------------------
+
+When reading a small-molecule CIF file, a few CIF items that describe
+the space group are read and stored in member variables:
 
 .. doctest::
 
-    >>> op_list = cif_doc[0].find_values('_symmetry_equiv_pos_as_xyz')
-    >>> gops = gemmi.GroupOps([gemmi.Op(o) for o in op_list])
-    >>> gemmi.find_spacegroup_by_ops(gops)
-    <gemmi.SpaceGroup("F -4 3 m")>
-    >>> # find_spacegroup() is based on the H-M name.
-    >>> _ is SiC.find_spacegroup()
-    True
+    >>> st = gemmi.read_small_structure('../tests/2013551.cif')
+    >>> st.symops
+    ['x, y, z', '-y, x-y, z', 'y, x, -z', '-x+y, -x, z', '-x, -x+y, -z', 'x-y, -y, -z', '-x, -y, -z', 'y, -x+y, -z', '-y, -x, z', 'x-y, x, -z', 'x, x-y, z', '-x+y, y, z']
+    >>> st.spacegroup_hall
+    '-P 3 2"'
+    >>> st.spacegroup_hm
+    'P -3 m 1'
+    >>> st.spacegroup_number
+    164
+
+and the function `set_spacegroup("S.H2")` is automatically
+run to set `spacegroup`:
+
+.. doctest::
+
+    >>> st.spacegroup
+    <gemmi.SpaceGroup("P -3 m 1")>
+
+`set_spacegroup()` takes one argument, a string in which characters
+specify what to use, and in what order, for space group determination:
+
+* `S` = symmetry operations stored in `symops`,
+* `H` = Hall symbol from `spacegroup_hall` (we compare symmetry operations
+  encoded in the Hall symbol, not the strings),
+* `1` = H-M symbol; for space groups such as "P n n n" that have two origin
+  choices listed in the International Tables, use *Origin Choice 1*,
+* `2` = H-M symbol, with *Origin Choice 2* where applicable,
+* `N` = the space group number,
+* `.` (after S or H) = if the symmetry operations pass sanity checks,
+  stop and use them regardless of whether they correspond to one of
+  the settings tabulated in Gemmi.
+
+If a symbol or operations match one of the 560+ space group settings tabulated
+in Gemmi, `spacegroup` is set to this setting. Otherwise, if `.` is encountered
+and the previous character (`S` or `H`) was evaluated to a valid set of symops,
+it is assumed that these operations were correct: `spacegroup` is left null
+and `cell.images` are set from the list of operations.
+About 350 (out of 500,000+) entries in the COD use such settings.
+Most of them have an unconventional choice of the origin
+(e.g. "P 1 21 1 (a,b,c-1/4)").
+
+To use a different order of items than "S.H2", call set_spacegroup() again:
+
+.. doctest::
+
+    >>> st.set_spacegroup('H.1')
+
+Errors such as an incorrect format of the symop triplets or of the Hall
+symbol are silently ignored, and the consistency between different items
+is not checked. That's because this function is run when reading a file;
+throwing an exception at that stage would prevent reading a file.
+We have a separate function to check for errors and inconsistencies.
+It returns a string, one line -- one error:
+
+.. doctest::
+
+    >>> st.check_spacegroup()
+    ''
+
+If the spacegroup setting used in a file is not tabulated in Gemmi,
+you can still create a GroupOps object with symmetry operations:
+
+.. doctest::
+
+    >>> gemmi.GroupOps([gemmi.Op(o) for o in st.symops])  #doctest: +ELLIPSIS
+    <gemmi.GroupOps object at 0x...>
+    >>> # or
+    >>> gemmi.symops_from_hall(st.spacegroup_hall)  #doctest: +ELLIPSIS
+    <gemmi.GroupOps object at 0x...>
 
 In C++ it would be similar, except that the following function
-would be used to make gemmi::GroupOps::
+would be used to make gemmi::GroupOps from symops::
 
     GroupOps split_centering_vectors(const std::vector<Op>& ops)
 
-----
+
+without CIF file
+----------------
 
 If your structure is stored in a macromolecular format (PDB, mmCIF)
 you can read it first as macromolecular :ref:`hierarchy <mcra>`
@@ -209,7 +277,7 @@ You could also create SmallStructure from scratch:
     >>> small = gemmi.SmallStructure()
     >>> small.spacegroup_hm = 'F -4 3 m'
     >>> small.cell = gemmi.UnitCell(4.358, 4.358, 4.358, 90, 90, 90)
-    >>> small.setup_cell_images()
+    >>> small.set_spacegroup("2")
     >>> # add a single atom
     >>> site = gemmi.SmallStructure.Site()
     >>> site.label = 'C1'
@@ -1579,6 +1647,20 @@ The last property is the sequence from the PDB SEQRES record
 (or its mmCIF equivalent).
 More details in the :ref:`section about sequence <sequence>`.
 
+Residue.entity_type can be used to determine what should Residue.het_flag be,
+based on the rules from the official PDB spec
+(i.e. non-standard residues are marked as HETATM even in a polymer).
+We also have a function to re-assign all het_flag values:
+
+.. doctest::
+
+  >>> st[0][0][0].recommended_het_flag()
+  'A'
+  >>> st.assign_het_flags('A')  # set all values to A=ATOM
+  >>> st.assign_het_flags('H')  # set all values to H=HETATM
+  >>> st.assign_het_flags('\0') # unset all values
+  >>> st.assign_het_flags()     # set correct values
+
 Connection
 ----------
 
@@ -2683,6 +2765,8 @@ In Python, `Model` has also methods for often needed calculations:
   <gemmi.Position(-5.7572, 16.4099, 2.88299)>
   >>> model.has_hydrogen()
   False
+  >>> model.calculate_b_iso_range()
+  (7.670000076293945, 46.880001068115234)
 
 The first two function can take a :ref:`Selection <selections>`
 as an argument. For example, we can count sulfur atoms with:

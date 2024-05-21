@@ -144,6 +144,20 @@ inline void setup_entities(Structure& st) {
   deduplicate_entities(st);
 }
 
+/// Determine ATOM/HETATM record type, based on Residue::entity_type
+GEMMI_DLL char recommended_het_flag(const Residue& res);
+/// R = recommended_het_flag(), other valid values are A, H and '\0'
+template<class T> void assign_het_flags(T& obj, char flag='R') {
+  for (auto& child : obj.children())
+    assign_het_flags(child, flag);
+}
+template<> inline void assign_het_flags(Residue& res, char flag) {
+  flag &= ~0x20; // uppercase letters, ' ' -> \0
+  if (flag != 'R' && flag != '\0' && flag != 'A' && flag != 'H')
+    fail("assign_het_flags(): the only allowed values are A, H, ' ' and R");
+  res.het_flag = flag == '?' ? recommended_het_flag(res) : flag;
+}
+
 // Remove waters. It may leave empty chains.
 template<class T> void remove_waters(T& obj) {
   for (auto& child : obj.children())
@@ -168,21 +182,7 @@ template<> inline void remove_ligands_and_waters(Chain& ch) {
 }
 
 // Trim to alanine. Returns true if trimmed, false if it's (likely) not AA.
-inline bool trim_to_alanine(Residue& res) {
-  static const std::pair<std::string, El> ala_atoms[6] = {
-    {"N", El::N}, {"CA", El::C}, {"C", El::C}, {"O", El::O}, {"CB", El::C},
-    {"OXT", El::O}
-  };
-  if (res.get_ca() == nullptr)
-    return false;
-  vector_remove_if(res.atoms, [](const Atom& a) {
-      for (const auto& name_el : ala_atoms)
-        if (a.name == name_el.first && a.element == name_el.second)
-          return false;
-      return true;
-  });
-  return true;
-}
+GEMMI_DLL bool trim_to_alanine(Residue& res);
 
 inline void trim_to_alanine(Chain& chain) {
   for (Residue& res : chain.residues)
@@ -191,16 +191,11 @@ inline void trim_to_alanine(Chain& chain) {
 
 // Functions for switching between long (>3 chars) residue names (CCD codes)
 // and shortened ones that are compatible with the PDB format.
-GEMMI_DLL
-void change_ccd_code(Structure& st, const std::string& old, const std::string& new_);
-
 GEMMI_DLL void shorten_ccd_codes(Structure& st);
+GEMMI_DLL void restore_full_ccd_codes(Structure& st);
 
-inline void restore_full_ccd_codes(Structure& st) {
-  for (const auto& item : st.shortened_ccd_codes)
-    change_ccd_code(st, item.second, item.first);
-  st.shortened_ccd_codes.clear();
-}
+/// Modifies Entity::full_sequence. Uses only the first chain for each Entity.
+GEMMI_DLL void add_microhetero_to_sequences(Structure& st, bool overwrite=false);
 
 } // namespace gemmi
 #endif

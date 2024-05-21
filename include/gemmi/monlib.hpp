@@ -125,7 +125,6 @@ struct EnerLib {
 
 struct GEMMI_DLL MonLib {
   std::string monomer_dir;
-  std::string lib_version;
   EnerLib ener_lib;
   std::map<std::string, ChemComp> monomers;
   std::map<std::string, ChemLink> links;
@@ -257,11 +256,7 @@ struct GEMMI_DLL MonLib {
   void read_monomer_doc(const cif::Document& doc);
 
   void read_monomer_cif(const std::string& path_, read_cif_func read_cif) {
-    const cif::Document& doc = (*read_cif)(path_);
-    if (!doc.blocks.empty() && doc.blocks[0].name == "lib")
-      if (const std::string* ver = doc.blocks[0].find_value("_lib.version"))
-        lib_version = *ver;
-    read_monomer_doc(doc);
+    read_monomer_doc((*read_cif)(path_));
   }
 
   void set_monomer_dir(const std::string& monomer_dir_) {
@@ -280,7 +275,12 @@ struct GEMMI_DLL MonLib {
       fail("read_monomer_lib: monomer_dir not specified.");
     set_monomer_dir(monomer_dir_);
 
-    read_monomer_cif(monomer_dir + "list/mon_lib_list.cif", read_cif);
+    // Only recent versions of CCP4 Monomer Library have links_and_mods.cif
+    try {
+      read_monomer_cif(monomer_dir + "links_and_mods.cif", read_cif);
+    } catch (std::system_error&) {
+      read_monomer_cif(monomer_dir + "list/mon_lib_list.cif", read_cif);
+    }
     ener_lib.read((*read_cif)(monomer_dir + "ener_lib.cif"));
 
     bool ok = true;

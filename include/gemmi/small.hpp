@@ -19,6 +19,22 @@
 
 namespace gemmi {
 
+inline bool is_complete(const GroupOps& gops) {
+  for (Op op1 : gops.sym_ops)
+    for (Op op2 : gops.sym_ops)
+      if (gops.find_by_rotation((op1 * op2).rot) == nullptr)
+        return false;
+  return true;
+}
+
+inline std::vector<Op> triplets_to_ops(const std::vector<std::string>& symops) {
+  std::vector<Op> ops;
+  ops.reserve(symops.size());
+  for (const std::string& xyz : symops)
+    ops.push_back(parse_triplet(xyz));
+  return ops;
+}
+
 struct SmallStructure {
   struct Site {
     std::string label;
@@ -55,15 +71,109 @@ struct SmallStructure {
 
   std::string name;
   UnitCell cell;
+  const SpaceGroup* spacegroup = nullptr;
   std::string spacegroup_hm;
+  std::string spacegroup_hall;
+  int spacegroup_number = 0;
+  std::vector<std::string> symops;
   std::vector<Site> sites;
   std::vector<AtomType> atom_types;
   double wavelength = 0.; // the first wavelength if multiple
 
   std::vector<Site> get_all_unit_cell_sites() const;
 
-  const SpaceGroup* find_spacegroup() const {
-    return find_spacegroup_by_name(spacegroup_hm, cell.alpha, cell.gamma);
+  void set_spacegroup(const char* order) {
+    spacegroup = nullptr;
+    if (order)
+      for (const char* c = order; *c != '\0' && spacegroup == nullptr; ++c) {
+        try {
+          GroupOps gops;
+          spacegroup = get_spacegroup_from(*c, gops);
+          if (!spacegroup && *(c+1) == '.') {
+            // If symops don't correspond to tabulated settings,
+            // we can't set spacegroup, but we can set UnitCell::images.
+            if (gops.order() == (int) symops.size() && is_complete(gops)) {
+              cell.set_cell_images_from_groupops(gops);
+              return;
+            }
+            ++c;
+          }
+        } catch (std::exception&) {}
+      }
+    setup_cell_images();
+  }
+
+  const SpaceGroup* get_spacegroup_from(char c, GroupOps& gops) const {
+    switch (lower(c)) {
+      case 's':
+        if (symops.empty())
+          return nullptr;
+        gops = split_centering_vectors(triplets_to_ops(symops));
+        return find_spacegroup_by_ops(gops);
+      case 'h':
+        if (spacegroup_hall.empty())
+          return nullptr;
+        return find_spacegroup_by_ops(symops_from_hall(spacegroup_hall.c_str()));
+      case '1':
+      case '2': {
+        if (spacegroup_hm.empty())
+          return nullptr;
+        char prefer[] = {c, '\0'};
+        return find_spacegroup_by_name(spacegroup_hm, cell.alpha, cell.gamma, prefer);
+      }
+      case 'n':
+        if (spacegroup_number == 0)
+          return nullptr;
+        return find_spacegroup_by_number(spacegroup_number);
+      default:
+        throw std::invalid_argument("set_spacegroup(): wrong character in 'order'");
+    }
+  }
+
+  std::string check_spacegroup() {
+    std::string err;
+    if (!symops.empty())
+      try {
+        std::vector<Op> ops = triplets_to_ops(symops);
+        for (Op& op : ops)
+          op.wrap();
+        std::sort(ops.begin(), ops.end());
+        GroupOps gops = split_centering_vectors(ops);
+        if (!is_complete(gops))
+          cat_to(err, "symops list is incomplete or incorrect\n");
+        else if (gops.all_ops_sorted() != ops)
+          cat_to(err, "symops list is incorrect or incomplete or redundant\n");
+        auto sg = find_spacegroup_by_ops(gops);
+        if (!sg)
+          cat_to(err, "space group from symops not found in the table\n");
+        else if (sg != spacegroup)
+          cat_to(err, "space group from symops differs: ", sg->xhm(), '\n');
+      } catch (std::exception& e) {
+        cat_to(err, "error while processing symops: ", e.what(), '\n');
+      }
+    if (!spacegroup_hall.empty())
+      try {
+        auto sg = find_spacegroup_by_ops(symops_from_hall(spacegroup_hall.c_str()));
+        if (!sg)
+          cat_to(err, "space group from Hall symbol (", spacegroup_hall,
+                 ") not found in the table\n");
+        else if (spacegroup != sg)
+          cat_to(err, "space group from Hall symbol (", spacegroup_hall,
+                 ") differs: ", sg->xhm(), '\n');
+      } catch (std::exception& e) {
+        cat_to(err, "error while processing Hall symbol: ", e.what(), '\n');
+      }
+    if (!spacegroup_hm.empty()) {
+      auto sg = find_spacegroup_by_name(spacegroup_hm, cell.alpha, cell.gamma, "2");
+      if (!sg)
+        cat_to(err, "H-M symbol (", spacegroup_hm, ") not found in the table\n");
+      else if (!spacegroup || strcmp(spacegroup->hm, sg->hm) != 0)
+        cat_to(err, "space group from H-M symbol (", spacegroup_hm,
+               ") differs: ", sg->hm, '\n');
+    }
+    if (spacegroup_number != 0 && spacegroup && spacegroup->number != spacegroup_number)
+      cat_to(err, "space group number (", spacegroup_number, ") differs\n");
+    return err;
   }
 
   const AtomType* get_atom_type(const std::string& symbol) const {
@@ -96,7 +206,7 @@ struct SmallStructure {
   }
 
   void setup_cell_images() {
-    cell.set_cell_images_from_spacegroup(find_spacegroup());
+    cell.set_cell_images_from_spacegroup(spacegroup);
   }
 };
 

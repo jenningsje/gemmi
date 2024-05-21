@@ -2,6 +2,7 @@
 
 #include <gemmi/polyheur.hpp>
 #include <gemmi/resinfo.hpp>   // for find_tabulated_residue
+#include <gemmi/modify.hpp>   // for rename_residues
 
 namespace gemmi {
 
@@ -80,6 +81,13 @@ std::string make_one_letter_sequence(const ConstResidueSpan& polymer) {
 static std::vector<Residue>::iterator infer_polymer_end(Chain& chain, PolymerType ptype) {
   auto b = chain.residues.begin();
   auto e = chain.residues.end();
+
+  // find the last residue w/ record type ATOM
+  auto last_a = e;
+  for (auto it = e; it-- != b;)
+    if (it->het_flag == 'A')
+      last_a = it;
+
   for (auto it = b; it != e; ++it) {
     ResidueInfo info = find_tabulated_residue(it->name);
     if (info.found()) {
@@ -94,8 +102,10 @@ static std::vector<Residue>::iterator infer_polymer_end(Chain& chain, PolymerTyp
         e = it;
         break;
       }
-      // If a standard residue is HETATM we assume that it is in the buffer.
-      if (info.is_standard() && it->het_flag == 'H') {
+      // If a standard residue is HETATM, it should be in the buffer. Although
+      // it could happen that a non-standard residue was mutated to a standard
+      // one, but the record type was not updated, so it's not 100% reliable.
+      if (info.is_standard() && it->het_flag == 'H' && it > last_a) {
         e = it;
         break;
       }
@@ -291,49 +301,32 @@ void deduplicate_entities(Structure& st) {
         }
 }
 
-void change_ccd_code(Structure& st, const std::string& old, const std::string& new_) {
-  auto process = [&](ResidueId& rid) {
-    if (rid.name == old)
-      rid.name = new_;
+char recommended_het_flag(const Residue& res) {
+    if (res.entity_type == EntityType::Unknown)
+      return '\0';
+    if (res.entity_type == EntityType::Polymer &&
+        find_tabulated_residue(res.name).is_standard())
+      return 'A';
+    return 'H';
+}
+
+bool trim_to_alanine(Residue& res) {
+  static const std::pair<std::string, El> ala_atoms[6] = {
+    {"N", El::N}, {"CA", El::C}, {"C", El::C}, {"O", El::O}, {"CB", El::C},
+    {"OXT", El::O}
   };
-  for (Model& model : st.models)
-    for (Chain& chain : model.chains)
-      for (Residue& res : chain.residues)
-        process(res);
-  for (Entity& ent : st.entities)
-    for (std::string& mon_ids : ent.full_sequence)
-      for (size_t start = 0;;) {
-        size_t end = mon_ids.find(',', start);
-        if (mon_ids.compare(start, end-start, old) == 0) {
-          mon_ids.replace(start, end-start, new_);
-          if (end != std::string::npos)
-            end = start + new_.size();
-        }
-        if (end == std::string::npos)
-          break;
-        start = end + 1;
-      }
-  for (Connection& conn : st.connections) {
-    process(conn.partner1.res_id);
-    process(conn.partner2.res_id);
-  }
-  for (CisPep& cispep : st.cispeps) {
-    process(cispep.partner_c.res_id);
-    process(cispep.partner_n.res_id);
-  }
-  for (ModRes& modres : st.mod_residues)
-    process(modres.res_id);
-  for (Helix& helix : st.helices) {
-    process(helix.start.res_id);
-    process(helix.end.res_id);
-  }
-  for (Sheet& sheet : st.sheets)
-    for (Sheet::Strand& strand : sheet.strands) {
-      process(strand.start.res_id);
-      process(strand.end.res_id);
-      process(strand.hbond_atom2.res_id);
-      process(strand.hbond_atom1.res_id);
-    }
+  if (res.get_ca() == nullptr)
+    return false;
+  vector_remove_if(res.atoms, [](const Atom& a) {
+      for (const auto& name_el : ala_atoms)
+        if (a.name == name_el.first && a.element == name_el.second)
+          return false;
+      return true;
+  });
+  // if non-standard polymer residue was mutated, update het_flag
+  if (res.entity_type == EntityType::Polymer && res.het_flag == 'H')
+    res.het_flag = 'A';
+  return true;
 }
 
 template <size_t I, typename T1, typename T2>
@@ -373,7 +366,7 @@ void shorten_ccd_codes(Structure& st) {
     if (!in_vector_at<1>(short_code, st.shortened_ccd_codes))
       old_new.second = short_code;
   }
-  // pick a new residue name and call change_ccd_code()
+  // pick a new residue name and call rename_residues()
   int i = -1;
   for (auto& old_new : st.shortened_ccd_codes) {
     // If ~DE was not unique, use ~00, ~01, ...
@@ -384,7 +377,49 @@ void shorten_ccd_codes(Structure& st) {
       if (!in_vector_at<1>(short_code, st.shortened_ccd_codes))
         old_new.second = short_code;
     }
-    change_ccd_code(st, old_new.first, old_new.second);
+    rename_residues(st, old_new.first, old_new.second);
+  }
+}
+
+void restore_full_ccd_codes(Structure& st) {
+  for (const auto& item : st.shortened_ccd_codes)
+    rename_residues(st, item.second, item.first);
+  st.shortened_ccd_codes.clear();
+}
+
+// Unlike _entity_poly_seq, SEQRES doesn't contain alternative residue names.
+// This function adds the alternative names to full_sequence.
+void add_microhetero_to_sequence(Entity& ent, ConstResidueSpan polymer) {
+  ent.reflects_microhetero = false;
+  int max_n = -1;  // max label_seq seen so far
+  for (const Residue& res : polymer) {
+    int n = *res.label_seq;
+    if (size_t(n-1) > ent.full_sequence.size())
+      return;
+    std::string& seq_item = ent.full_sequence[n-1];
+    if (n > max_n) {
+      if (!is_in_list(res.name, seq_item))
+        return;
+      max_n = n;
+    } else {  // n < max_n shouldn't happen
+      if (!is_in_list(res.name, seq_item))
+        cat_to(seq_item, ',', res.name);
+    }
+  }
+  ent.reflects_microhetero = true;
+}
+
+void add_microhetero_to_sequences(Structure& st, bool overwrite) {
+  if (st.models.empty())
+    return;
+  for (Entity& ent : st.entities) {
+    if (ent.subchains.empty())
+      continue;
+    ConstResidueSpan polymer = st.models[0].get_subchain(ent.subchains[0]);
+    if (!polymer || !polymer.front().label_seq)
+      continue;
+    if (overwrite || !ent.reflects_microhetero)
+      add_microhetero_to_sequence(ent, polymer);
   }
 }
 

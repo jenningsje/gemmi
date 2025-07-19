@@ -18,7 +18,7 @@ std::unique_ptr<ChemComp> make_chemcomp_with_restraints(const Residue& res) {
   // add atoms
   cc->atoms.reserve(res.atoms.size());
   for (const Atom& a : res.atoms) {
-    if (!a.same_conformer(res.atoms[0]))
+    if (a.altloc != '\0' && cc->has_atom(a.name))
       continue;
     Element el = a.element;
     if (el == El::X)
@@ -37,12 +37,12 @@ std::unique_ptr<ChemComp> make_chemcomp_with_restraints(const Residue& res) {
   // first heavy atoms only
   for (size_t i = 0; i != res.atoms.size(); ++i) {
     const Atom& at1 = res.atoms[i];
-    if (at1.is_hydrogen() || !at1.same_conformer(res.atoms[0]))
+    if (at1.is_hydrogen())
       continue;
     float r1 = at1.element.covalent_r();
     for (size_t j = i+1; j != res.atoms.size(); ++j) {
       const Atom& at2 = res.atoms[j];
-      if (at2.is_hydrogen() || !at2.same_conformer(res.atoms[0]))
+      if (at2.is_hydrogen() || !at2.same_conformer(at1))
         continue;
       double d2 = at1.pos.dist_sq(at2.pos);
       float r2 = at2.element.covalent_r();
@@ -54,7 +54,7 @@ std::unique_ptr<ChemComp> make_chemcomp_with_restraints(const Residue& res) {
   // now each hydrogen with the nearest heavy atom
   for (size_t i = 0; i != res.atoms.size(); ++i) {
     const Atom& at1 = res.atoms[i];
-    if (at1.is_hydrogen() && at1.same_conformer(res.atoms[0])) {
+    if (at1.is_hydrogen()) {
       size_t nearest = (size_t)-1;
       double min_d2 = sq(2.5);
       for (size_t j = 0; j != res.atoms.size(); ++j) {
@@ -74,6 +74,7 @@ std::unique_ptr<ChemComp> make_chemcomp_with_restraints(const Residue& res) {
   }
 
   // add bonds
+  // note: duplicated bonds (from different conformations) are not a problem
   for (const Pair& p : pairs) {
     Restraints::Bond bond;
     bond.id1 = Restraints::AtomId{1, res.atoms[p.n1].name};
@@ -247,7 +248,7 @@ static void add_polymer_links(PolymerType polymer_type,
               char alt = a1.altloc_or(a2.altloc_or('*'));
               const Atom* ca1_atom = ri1.res->find_atom(ca1, alt, El::C);
               const Atom* ca2_atom = ri2.res->find_atom(ca2, alt, El::C);
-              link.is_cis = is_peptide_bond_cis(ca1_atom, &a1, &a2, ca2_atom);
+              link.is_cis = is_peptide_bond_cis(ca1_atom, &a1, &a2, ca2_atom, 60.);
               if (n_terminus_group == ChemComp::Group::PPeptide)
                 link.link_id = link.is_cis ? "PCIS" : "PTRANS";
               else if (n_terminus_group == ChemComp::Group::MPeptide)
@@ -423,17 +424,17 @@ std::vector<Topo::Rule> Topo::apply_restraints(const Restraints& rt,
 }
 
 void Topo::apply_restraints_from_link(Link& link, const MonLib& monlib) {
-  if (link.link_id.empty())
+  if (link.link_id.empty() || link.link_id == "gap")
     return;
   const ChemLink* chem_link = monlib.get_link(link.link_id);
   if (!chem_link) {
-    err("ignoring link '" + link.link_id + "' as it is not in the monomer library");
+    logger.err("ignoring link '", link.link_id, "' as it is not in the monomer library");
     return;
   }
   const Restraints* rt = &chem_link->rt;
   if (link.alt1 && link.alt2 && link.alt1 != link.alt2)
-    err(cat("LINK between different conformers: ", link.alt1, " (in ",
-            link.res1->name, ") and ", link.alt2, " (in " + link.res2->name, ")."));
+    logger.err("LINK between different conformers: ", link.alt1, " (in ",
+               link.res1->name, ") and ", link.alt2, " (in ", link.res2->name, ").");
   // aliases are a new feature - introduced in 2022
   if (link.aliasing1 || link.aliasing2) {
     std::unique_ptr<Restraints> rt_copy(new Restraints(*rt));
@@ -558,11 +559,11 @@ void Topo::initialize_refmac_topology(Structure& st, Model& model0,
                   try {
                     chem_mod->apply_to(*cc_copy, mod.alias);
                   } catch(std::runtime_error& e) {
-                    err(cat("failed to apply modification ", chem_mod->id,
-                            " to ", ri.res->name, ": ", e.what()));
+                    logger.err("failed to apply modification ", chem_mod->id,
+                               " to ", ri.res->name, ": ", e.what());
                   }
                 } else {
-                  err("modification not found: " + mod.id);
+                  logger.err("modification not found: ", mod.id);
                 }
               }
             }
@@ -605,6 +606,8 @@ void Topo::apply_all_restraints(const MonLib& monlib) {
       while (++it != ri.chemcomps.end()) {
         auto rules = apply_restraints(it->cc->rt, *ri.res, nullptr, Asu::Same,
                                       it->altloc, '\0', /*require_alt=*/true);
+        // calling reserve avoids bogus GCC warning -Wstringop-overflow
+        ri.monomer_rules.reserve(ri.monomer_rules.size() + rules.size());
         vector_move_extend(ri.monomer_rules, std::move(rules));
       }
     }
@@ -640,8 +643,8 @@ Topo::Link* Topo::find_polymer_link(const AtomAddress& aa1, const AtomAddress& a
            a2.res_id.matches_noseg(*link.res2) &&
            a1.altloc == link.alt1 &&
            a2.altloc == link.alt2 &&
-           atom_name_id(a1.atom_name) == link.atom1_name_id &&
-           atom_name_id(a2.atom_name) == link.atom2_name_id;
+           (a1.atom_name.empty() || atom_name_id(a1.atom_name) == link.atom1_name_id) &&
+           (a2.atom_name.empty() || atom_name_id(a2.atom_name) == link.atom2_name_id);
   };
   if (aa1.chain_name != aa2.chain_name)
     return nullptr;
@@ -684,7 +687,7 @@ void Topo::setup_connection(Connection& conn, Model& model0, MonLib& monlib,
   if (!conn.link_id.empty()) {
     match = monlib.get_link(conn.link_id);
     if (!match) {
-      err("link not found in monomer library: " + conn.link_id);
+      logger.err("link not found in monomer library: ", conn.link_id);
       return;
     }
     if (match->rt.bonds.empty() ||
@@ -694,7 +697,7 @@ void Topo::setup_connection(Connection& conn, Model& model0, MonLib& monlib,
                                conn.partner1.atom_name, extra.aliasing1) ||
         !atom_match_with_alias(match->rt.bonds[0].id2.atom,
                                conn.partner2.atom_name, extra.aliasing2)) {
-      err("link from the monomer library does not match: " + conn.link_id);
+      logger.err("link from the monomer library does not match: ", conn.link_id);
       return;
     }
   } else {
@@ -743,17 +746,17 @@ void Topo::set_cispeps_in_structure(Structure& st) {
   if (chain_infos.empty())
     return;
   // model is not stored in Topo, let's determine it from chain_infos[0]
-  std::string model_str;
+  int model_num = 0;
   for (const Model& model : st.models)
     if (!model.chains.empty() &&
         &model.chains[0] == &chain_infos[0].chain_ref)
-      model_str = model.name;
+      model_num = model.num;
   for (ChainInfo& chain_info : chain_infos)
     for (ResInfo& res_info : chain_info.res_infos)
       for (Link& link : res_info.prev)
         if (link.is_cis) {
           CisPep cp;
-          cp.model_str = model_str;
+          cp.model_num = model_num;
           cp.partner_c = AtomAddress(chain_info.chain_ref.name, *link.res1, "", link.alt1);
           cp.partner_n = AtomAddress(chain_info.chain_ref.name, *link.res2, "", link.alt2);
           cp.only_altloc = link.alt1 ? link.alt1 : link.alt2;
@@ -798,11 +801,10 @@ void set_cis_in_link(Topo::Link& link, bool is_cis) {
 }
 
 void force_cispeps(Topo& topo, bool single_model, const Model& model,
-                          const std::vector<CisPep>& cispeps,
-                          std::ostream* warnings) {
+                          const std::vector<CisPep>& cispeps) {
   std::multimap<const Residue*, const CisPep*> cispep_index;
   for (const CisPep& cp : cispeps) {
-    if (single_model || model.name == cp.model_str)
+    if (single_model || model.num == cp.model_num)
       if (const Residue* res_n = model.find_cra(cp.partner_n).residue)
         cispep_index.emplace(res_n, &cp);
   }
@@ -820,12 +822,10 @@ void force_cispeps(Topo& topo, bool single_model, const Model& model,
         }
         if (is_cis != link.is_cis) {
           set_cis_in_link(link, is_cis);
-          if (warnings)
-            *warnings << "Link between "
-                      << atom_str(chain_info.chain_ref.name, *link.res1, "", link.alt1)
-                      << " and "
-                      << atom_str(chain_info.chain_ref.name, *link.res2, "", link.alt2)
-                      << " forced to " << link.link_id << std::endl;
+          const std::string& ch_name = chain_info.chain_ref.name;
+          topo.logger.note("link between ", atom_str(ch_name, *link.res1, "", link.alt1),
+                           " and ", atom_str(ch_name, *link.res2, "", link.alt2),
+                           " forced to ", link.link_id);
         }
       }
     }
@@ -858,7 +858,7 @@ void add_hydrogens_without_positions(Topo::ResInfo& ri, const NeighMap& neighbor
       auto range = neighbor_altlocs.equal_range(atoms[i].serial);
       for (auto it = range.first; it != range.second; ++it) {
         const Neigh& neigh = it->second;
-        if (altlocs.count(neigh.alt) == 0 && occ_sum + neigh.occ <= 1.001f) {
+        if (altlocs.count(neigh.alt) == 0 && neigh.occ < 1.0f && occ_sum + neigh.occ <= 1.001f) {
           occ_sum += neigh.occ;
           altlocs.emplace(neigh.alt, neigh.occ);
         }
@@ -899,17 +899,13 @@ void add_hydrogens_without_positions(Topo::ResInfo& ri, const NeighMap& neighbor
 
 NeighMap prepare_neighbor_altlocs(Topo& topo, const MonLib& monlib) {
   // disable warnings here, so they are not printed twice
-  std::streambuf* warnings_orig = nullptr;
-  if (topo.warnings)
-    warnings_orig = topo.warnings->rdbuf(nullptr);
+  topo.logger.suspend();
   // Prepare bonds. Fills topo.bonds, monomer_rules/link_rules and rt_storage,
   // but they are all reset when apply_all_restraints() is called again.
   topo.only_bonds = true;
   topo.apply_all_restraints(monlib);
   topo.only_bonds = false;
-  // re-enable warnings
-  if (warnings_orig)
-    topo.warnings->rdbuf(warnings_orig);
+  topo.logger.resume(); // re-enable warnings
   NeighMap neighbors;
   for (const Topo::Bond& bond : topo.bonds) {
     const Atom* a1 = bond.atoms[0];
@@ -927,16 +923,16 @@ NeighMap prepare_neighbor_altlocs(Topo& topo, const MonLib& monlib) {
 std::unique_ptr<Topo>
 prepare_topology(Structure& st, MonLib& monlib, size_t model_index,
                  HydrogenChange h_change, bool reorder,
-                 std::ostream* warnings, bool ignore_unknown_links, bool use_cispeps) {
+                 const Logger& logger, bool ignore_unknown_links, bool use_cispeps) {
   std::unique_ptr<Topo> topo(new Topo);
-  topo->warnings = warnings;
+  topo->logger = logger;
   if (model_index >= st.models.size())
     fail("no such model index: " + std::to_string(model_index));
   Model& model = st.models[model_index];
   topo->initialize_refmac_topology(st, model, monlib, ignore_unknown_links);
 
   if (use_cispeps)
-    force_cispeps(*topo, st.models.size() == 1, model, st.cispeps, warnings);
+    force_cispeps(*topo, st.models.size() == 1, model, st.cispeps);
 
   // remove hydrogens, or change deuterium to fraction, or nothing
   // and then check atom names
@@ -975,7 +971,7 @@ prepare_topology(Structure& st, MonLib& monlib, size_t model_index,
             if (it != cc.atoms.end())
               cat_to(msg, " (replace ", atom.name, " with ", it->id, ')');
           }
-          topo->err(msg);
+          topo->logger.err(msg);
         }
       }
     }
@@ -1021,7 +1017,7 @@ prepare_topology(Structure& st, MonLib& monlib, size_t model_index,
         // check for missing altloc
         for (auto atom = res.atoms.begin(); atom + 1 < res.atoms.end(); ++atom)
           if (atom->name == (atom + 1)->name && atom->altloc == '\0')
-            topo->err("missing altloc in " + atom_str(chain_info.chain_ref, *ri.res, *atom));
+            topo->logger.err("missing altloc in ", atom_str(chain_info.chain_ref, *ri.res, *atom));
       }
 
   // for atoms with ad-hoc links, for now we don't want hydrogens
@@ -1059,15 +1055,11 @@ prepare_topology(Structure& st, MonLib& monlib, size_t model_index,
         vector_remove_if(res.atoms, [](Atom& a) { return a.is_hydrogen() && a.occ == 0; });
 
     // disable warnings here, so they are not printed twice
-    std::streambuf *warnings_orig = nullptr;
-    if (topo->warnings)
-      warnings_orig = topo->warnings->rdbuf(nullptr);
+    topo->logger.suspend();
     // re-set restraints and indices
     topo->apply_all_restraints(monlib);
     topo->create_indices();
-    // re-enable warnings
-    if (warnings_orig)
-      topo->warnings->rdbuf(warnings_orig);
+    topo->logger.resume();
   }
 
   assign_serial_numbers(model);

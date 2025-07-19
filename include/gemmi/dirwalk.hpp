@@ -1,8 +1,8 @@
 // Copyright 2018 Global Phasing Ltd.
 //
-// Classes for iterating files in a directory tree, top-down,
-// in an alphabetical order.  It wraps the tinydir library (as we cannot
-// depend on C++17 <filesystem> yet).
+// Classes for iterating over files in a directory tree, top-down,
+// in alphabetical order. Wraps the tinydir library (as we cannot yet
+// depend on C++17 <filesystem>).
 
 // DirWalk<> iterates through all files and directories.
 // CifWalk yields only cif files (either files that end with .cif or .cif.gz,
@@ -62,7 +62,8 @@ inline bool glob_match(const std::string& pattern, const std::string& str) {
         str_next = str_pos + 1;
         pat_pos++;
         continue;
-      } else if (str_pos < str.size() && (c == '?' || c == str[str_pos])) {
+      }
+      if (str_pos < str.size() && (c == '?' || c == str[str_pos])) {
         pat_pos++;
         str_pos++;
         continue;

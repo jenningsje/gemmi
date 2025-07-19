@@ -25,7 +25,7 @@ int find_column_index(const std::string& column, const Mtz& mtz) {
         if (idx == -1)
           idx = (int) i;
         else
-          mtz.warn("Column label duplicated: " + label);
+          mtz.logger.note("Column label duplicated: " + label);
       }
     }
     if (idx != -1)
@@ -65,7 +65,8 @@ int check_format(const std::string& fmt) {
 #define WRITE(...) os.write(buf, snprintf_z(buf, 255, __VA_ARGS__))
 
 void write_cell_and_symmetry(const std::string& entry_id,
-                             const UnitCell& cell, double* rmsds, const SpaceGroup* sg,
+                             const UnitCellParameters& cell, double* rmsds,
+                             const SpaceGroup* sg,
                              char* buf, std::ostream& os) {
   os << "_cell.entry_id " << entry_id << '\n';
   WRITE("_cell.length_a    %8.4f\n", cell.a);
@@ -264,7 +265,7 @@ struct SweepInfo {
         } catch (std::runtime_error&) {
           sweep.dataset = nullptr;
           ok = false;
-          mtz.warn("Reference to absent dataset: " + std::to_string(dataset_id));
+          mtz.logger.note("Reference to absent dataset: " + std::to_string(dataset_id));
         }
       }
       sweep_indices.emplace(batch.number, sweep.id - 1);
@@ -442,7 +443,7 @@ void write_main_loop(const MtzToCif& m2c, const SweepInfo& sweep_info,
   auto write_int = [](char* p, int num) {
     //return snprintf_z(p, 32, "%d", num);
     std::string s = std::to_string(num);
-    std::memcpy(p, s.data(), s.size());
+    std::memcpy(p, s.data(), s.size());  // NOLINT(bugprone-not-null-terminated-result)
     return s.size();
   };
 
@@ -688,7 +689,7 @@ void MtzToCif::write_cif(const Mtz& mtz, const Mtz* mtz2,
     write_cell_and_symmetry(entry_id, mtz.get_cell(), nullptr, mtz.spacegroup, buf, os);
   } else {
     double rmsds[6];
-    UnitCell cell = unmerged->get_average_cell_from_batch_headers(rmsds);
+    UnitCellParameters cell = unmerged->get_average_cell_from_batch_headers(rmsds);
     write_cell_and_symmetry(entry_id, cell, rmsds, mtz.spacegroup, buf, os);
   }
 
@@ -706,7 +707,7 @@ void MtzToCif::write_cif(const Mtz& mtz, const Mtz* mtz2,
   }
 }
 
-void MtzToCif::write_cif_from_xds(const XdsAscii& xds, std::ostream& os) {
+void MtzToCif::write_cif_from_xds(const XdsAscii& xds, std::ostream& os) const {
   char buf[256];
   if (with_comments) {
     os << "# Converted by gemmi-mtz2cif " GEMMI_VERSION "\n";
@@ -791,18 +792,16 @@ void MtzToCif::write_cif_from_xds(const XdsAscii& xds, std::ostream& os) {
   const SpaceGroup* sg = find_spacegroup_by_number(xds.spacegroup_number);
   double rmsds[6] = {0., 0., 0., 0., 0., 0.};
   if (xds.isets.size() > 1) {
-    double mean[6] = {xds.unit_cell.a, xds.unit_cell.b, xds.unit_cell.c,
-                      xds.unit_cell.alpha, xds.unit_cell.beta, xds.unit_cell.gamma};
     int n = 0;
     for (const XdsAscii::Iset& iset : xds.isets) {
       for (int i = 0; i < 6; ++i)
-        rmsds[i] += sq(mean[i] - iset.cell_constants[i]) * iset.frame_count;
+        rmsds[i] += sq(xds.cell_constants[i] - iset.cell_constants[i]) * iset.frame_count;
       n += iset.frame_count;
     }
     for (int i = 0; i < 6; ++i)
       rmsds[i] = std::sqrt(rmsds[i] / n);
   }
-  write_cell_and_symmetry(entry_id, xds.unit_cell, rmsds, sg, buf, os);
+  write_cell_and_symmetry(entry_id, UnitCellParameters(xds.cell_constants), rmsds, sg, buf, os);
 
   os << "\nloop_"
         "\n_diffrn_refln.diffrn_id"
@@ -834,7 +833,7 @@ void MtzToCif::write_cif_from_xds(const XdsAscii& xds, std::ostream& os) {
 
 #undef WRITE
 
-void remove_appendix_from_column_names(Mtz& mtz, std::ostream& out) {
+void remove_appendix_from_column_names(Mtz& mtz, const Logger& logger) {
   std::string appendix;
   for (char type : {'J', 'F'}) {  // intensity, amplitude
     auto cols = mtz.columns_with_type(type);
@@ -850,7 +849,7 @@ void remove_appendix_from_column_names(Mtz& mtz, std::ostream& out) {
   }
   if (appendix.empty())
     return;
-  out << "Ignoring '" << appendix << "' appended to column names.\n";
+  logger.mesg("Ignoring '", appendix, "' appended to column names.");
   for (Mtz::Column& col : mtz.columns) {
     size_t from_end  = appendix.size();
     // the appendix can before (+)/(-), i.e. I_appendix(+)
@@ -862,47 +861,48 @@ void remove_appendix_from_column_names(Mtz& mtz, std::ostream& out) {
   }
 }
 
-bool validate_merged_mtz_deposition_columns(const Mtz& mtz, std::ostream& out) {
+bool validate_merged_mtz_deposition_columns(const Mtz& mtz, const Logger& logger) {
   bool ok = true;
   if (!mtz.rfree_column()) {
-    out << "ERROR. Merged file is missing free-set flag.\n";
+    logger.level<3>("ERROR. Merged file is missing free-set flag.");
     ok = false;
   }
   if (!mtz.imean_column() && !mtz.iplus_column()) {
-    out << "ERROR. Merged file is missing intensities.\n";
+    logger.level<3>("ERROR. Merged file is missing intensities.");
     ok = false;
   }
   if (!mtz.column_with_one_of_labels({"F", "FP", "FOBS", "F-obs",
                                       "F(+)", "FOBS(+)", "F-obs(+)", "Fplus"})) {
-    out << "Merged file is missing amplitudes\n"
-           "(which is fine if intensities were used for refinement)\n";
+    logger.mesg("Merged file is missing amplitudes\n"
+                "(which is fine if intensities were used for refinement)");
   }
   if (!ok) {
-    out << "Columns in the merged file:";
+    std::string s = "Columns in the merged file:";
     for (const Mtz::Column& col : mtz.columns)
-      out << ' ' << col.label;
-    out << '\n';
+      cat_to(s, ' ', col.label);
+    logger.mesg(s);
   }
   return ok;
 }
 
 bool validate_merged_intensities(Intensities& mi, Intensities& ui,
-                                 bool relaxed_check, std::ostream& out) {
+                                 bool relaxed_check, const Logger& logger) {
   // XDS files have 4 significant digits. Using accuracy 5x the precision.
   const double max_diff = 0.005;
-  out << "Checking if both files match...\n";
+  logger.mesg("Checking if both files match...");
   bool ok = true;
   if (ui.spacegroup == mi.spacegroup) {
-    out << "The same space group: " << mi.spacegroup_str() << '\n';
+    logger.mesg("The same space group: ", mi.spacegroup_str());
+  } else if (!ui.spacegroup || !mi.spacegroup) {
+    logger.mesg("ERROR. Space group not set.");
+    ok = false;
   } else {
     GroupOps gops1 = ui.spacegroup->operations();
     GroupOps gops2 = mi.spacegroup->operations();
-    if (!gops1.has_same_centring(gops2) || !gops1.has_same_rotations(gops2)) {
-      ok = false;
-      out << "ERROR. ";
-    }
-    out << "Different space groups in merged and unmerged files:\n"
-        << mi.spacegroup_str() << " and " << ui.spacegroup_str() << '\n';
+    ok = gops1.has_same_centring(gops2) && gops1.has_same_rotations(gops2);
+    logger.mesg(ok ? "" : "ERROR. ",
+                "Different space groups in merged and unmerged files:\n",
+                mi.spacegroup_str(), " and ", ui.spacegroup_str());
   }
 
   auto eq = [](double x, double y, double rmsd) { return std::fabs(x - y) < rmsd + 0.02; };
@@ -912,16 +912,16 @@ bool validate_merged_intensities(Intensities& mi, Intensities& ui,
      eq(mi.unit_cell.alpha, ui.unit_cell.alpha, ui.unit_cell_rmsd[3]) &&
      eq(mi.unit_cell.beta,  ui.unit_cell.beta,  ui.unit_cell_rmsd[4]) &&
      eq(mi.unit_cell.gamma, ui.unit_cell.gamma, ui.unit_cell_rmsd[5])) {
-    out << "The same unit cell parameters.\n";
+    logger.mesg("The same unit cell parameters.");
   } else {
     const UnitCell& mc = mi.unit_cell;
     const UnitCell& uc = ui.unit_cell;
-    out << "Unit cell parameters differ:";
-    out << "\n    merged: " << mc.a << ' ' << mc.b << ' ' << mc.c << "  "
-                            << mc.alpha << ' ' << mc.beta << ' ' << mc.gamma;
-    out << "\n  unmerged: " << uc.a << ' ' << uc.b << ' ' << uc.c << "  "
-                            << uc.alpha << ' ' << uc.beta << ' ' << uc.gamma;
-    out << '\n';
+    std::string s = "Unit cell parameters differ:";
+    cat_to(s, "\n    merged: ", to_str(mc.a), ' ', to_str(mc.b), ' ', to_str(mc.c), "  ",
+                                to_str(mc.alpha), ' ', to_str(mc.beta), ' ', to_str(mc.gamma));
+    cat_to(s, "\n  unmerged: ", to_str(uc.a), ' ', to_str(uc.b), ' ', to_str(uc.c), "  ",
+                                to_str(uc.alpha), ' ', to_str(uc.beta), ' ', to_str(uc.gamma));
+    logger.mesg(s);
     ok = false;
   }
 
@@ -929,27 +929,29 @@ bool validate_merged_intensities(Intensities& mi, Intensities& ui,
   ui.merge_in_place(mi.type);  // it also sorts
   size_t ui_size2 = ui.data.size();
   ui.remove_systematic_absences();
-  out << "Unmerged reflections: " << ui_size1 << " (" << ui_size2 << " merged "
-      << mi.type_str() << ", " << ui.data.size() << " w/o sysabs)\n";
-  mi.switch_to_asu_indices(/*merged=*/true);
+  logger.mesg("Unmerged reflections: ", ui_size1, " (", ui_size2, " merged ",
+              mi.type_str(), ", ", ui.data.size(), " w/o sysabs)");
+  mi.switch_to_asu_indices();
   mi.sort();
   size_t mi_size1 = mi.data.size();
   mi.remove_systematic_absences();
-  out << "Merged reflections: " << mi_size1 << ' ' << mi.type_str()
-      << " (" << mi.data.size() << " w/o sysabs)\n";
+  logger.mesg("Merged reflections: ", mi_size1, ' ', mi.type_str(),
+              " (", mi.data.size(), " w/o sysabs)");
 
   if (mi.staraniso_b.ok()) {
-    out << "Taking into account the anisotropy tensor that was used for scaling.\n";
+    logger.mesg("Taking into account the anisotropy tensor that was used for scaling.");
     for (Intensities::Refl& refl : ui.data)
       refl.value *= mi.staraniso_b.scale(refl.hkl, ui.unit_cell);
   }
 
   // first pass - calculate CC and scale
   gemmi::Correlation corr = calculate_hkl_value_correlation(ui.data, mi.data);
-  out << "Corr. coef. of " << corr.n << ' ' << mi.type_str() << " values: "
-      << 100 * corr.coefficient() << "%\n";
+  char buf[16];
+  gemmi::sprintf_z(buf, "%.7g", 100 * corr.coefficient());
+  logger.mesg("Corr. coef. of ", corr.n, ' ', mi.type_str(), " values: ", buf, '%');
   double scale = corr.mean_ratio();
-  out << "Ratio of compared intensities (merged : unmerged): " << scale << '\n';
+  gemmi::sprintf_z(buf, "%.6g", scale);
+  logger.mesg("Ratio of compared intensities (merged : unmerged): ", buf);
 
   // second pass - check that all reflections match
   double max_weighted_sq_diff = 0.;
@@ -959,9 +961,6 @@ bool validate_merged_intensities(Intensities& mi, Intensities& ui,
   int missing_count = 0;
   auto r1 = ui.data.begin();
   auto r2 = mi.data.begin();
-  auto refln_str = [](const Intensities::Refl& r) {
-    return r.intensity_label() + std::string(" ") + miller_str(r.hkl);
-  };
   while (r1 != ui.data.end() && r2 != mi.data.end()) {
     if (r1->hkl == r2->hkl && r1->isign == r2->isign) {
       if (!relaxed_check) {
@@ -973,8 +972,8 @@ bool validate_merged_intensities(Intensities& mi, Intensities& ui,
         // so if the absolute difference is <0.01 it's OK.
         if (sq_diff > 1e-4 && sq_diff > sq(max_diff) * sq_max) {
           if (differ_count == 0) {
-            out << "First difference: " << r1->hkl_label()
-                << ' ' << value1 << " vs " << r2->value << '\n';
+            logger.mesg("First difference: ", r1->hkl_label(), ' ',
+                        to_str(value1), " vs ", to_str(r2->value));
           }
           ++differ_count;
           double weighted_sq_diff = sq_diff / (sq(sigma1) + sq(r2->sigma));
@@ -991,40 +990,93 @@ bool validate_merged_intensities(Intensities& mi, Intensities& ui,
       ++r1;
     } else {
       if (missing_count == 0)
-        out << "First missing reflection in unmerged data: " << refln_str(*r1) << '\n';
+        logger.mesg("First missing reflection in unmerged data: ", r2->hkl_label());
       ++missing_count;
       ++r2;
     }
   }
 
   if (differ_count != 0) {
-    out << "Most significant difference: " << refln_str(*max_diff_r1) << ' '
-        << scale * max_diff_r1->value << " vs " << max_diff_r2->value << '\n';
-    out << differ_count << " of " << corr.n << " intensities differ too much (by >"
-        << to_str(max_diff * 100) << "%).\n";
-    if (differ_count >= 0.001 * corr.n)
+    logger.mesg("Most significant difference: ", max_diff_r1->hkl_label(), ' ',
+                to_str(scale * max_diff_r1->value), " vs ", to_str(max_diff_r2->value));
+    logger.mesg(differ_count, " of ", corr.n, " intensities differ too much (by >",
+                to_str(max_diff * 100), "%).");
+    if (differ_count >= 0.02 * corr.n) {
       ok = false;
-    else
-      out << "(less than 0.1% of all intensities -"
-          << " probably outlier rejection during merging)\n";
+      if (differ_count < 0.2 * corr.n)
+        logger.mesg("(currently, only 2% of reflections is allowed to differ,"
+                    " due to possible outlier rejects during merging;"
+                    " if this threshold seems too strict - let us know)");
+    } else {
+      logger.mesg("(less than 2% of all intensities - probably outlier rejection during merging)");
+    }
   }
   if (missing_count != 0) {
-    out << missing_count << " out of " << mi.data.size()
-        << " reflections in the merged file not found in unmerged data\n";
+    logger.mesg(missing_count, " out of ", mi.data.size(),
+                " reflections in the merged file not found in unmerged data");
     ok = false;
   }
   if (!relaxed_check) {
-    if (differ_count == 0 && missing_count == 0) {
-      out << "Intensities match.";
-      if (!ok)
-        out << " But other problems were found (see above).";
-      out << '\n';
-    } else {
-      out << (ok ? "OK. Intensities almost match.\n"
-                 : "ERROR. Intensities do not match.\n");
-    }
+    if (differ_count == 0 && missing_count == 0)
+      logger.mesg("Intensities match.",
+                  ok ? "" : " But other problems were found (see above).");
+    else
+      logger.mesg(ok ? "OK. Intensities match (with few exceptions)."
+                     : "ERROR. Intensities do not match.");
   }
   return ok;
+}
+
+std::vector<SoftwareItem> get_software_from_mtz_history(const std::vector<std::string>& history) {
+  std::vector<SoftwareItem> items;
+  for (const std::string& line : history) {
+    const char* p = line.c_str();
+    // usually history items start with "From", I've seen also:
+    // SCALA: run at 12:34:33 on 21/ 3/97
+    if (starts_with(line, "From "))
+      p += 5;
+    SoftwareItem item;
+    item.name = read_word(p, &p);
+    // some programs write comma or colon after the name, e.g.
+    // From AIMLESS, version 0.7.4, run on  3/11/2020 at 18:29:12
+    if (!item.name.empty() && (item.name.back() == ',' || item.name.back() == ':'))
+      item.name.pop_back();
+    if (std::any_of(items.begin(), items.end(),
+                    [&](const SoftwareItem& x) { return x.name == item.name; }))
+      continue;
+    item.version = read_word(p, &p);
+    if (iequal(item.version, "version"))
+      item.version = read_word(p, &p);
+    // XDS version is a 3-word date
+    // From XDS VERSION Jan 31, 2020  BUILT=20200417, run on 03/11/2020 at 17:28:43
+    if (item.name == "XDS") {
+      const char* end = skip_word(skip_blank(skip_word(skip_blank(p))));
+      item.version.append(p, end);
+    }
+    // version can be absent, e.g.
+    // From SCALA: run at 16:32:41 on 10/ 8/10
+    if (item.version == "run")
+      item.version.clear();
+    if (!item.version.empty() && item.version.back() == ',')
+      item.version.pop_back();
+    // For now this is to be tested in refinement programs, so we parse
+    // only a few items from data processing. More may come.
+    if (item.name == "XDS" || item.name == "DIALS" || item.name == "MOSFLM")
+      item.classification = SoftwareItem::Classification::DataReduction;
+    else if (item.name == "AIMLESS" || item.name == "SCALA")
+      item.classification = SoftwareItem::Classification::DataScaling;
+    if (item.classification != SoftwareItem::Classification::Unspecified)
+      items.push_back(item);
+  }
+  if (!items.empty()) {
+    SoftwareItem item;
+    // To check how many PDB entries are populated this way, I'll add:
+    item.name = "gemmi";
+    item.version = GEMMI_VERSION;
+    item.classification = SoftwareItem::Classification::DataExtraction;
+    items.push_back(item);
+  }
+  return items;
 }
 
 } // namespace gemmi

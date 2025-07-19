@@ -92,22 +92,25 @@ int GEMMI_MAIN(int argc, char **argv) {
   else if (p.options[RemoveH])
     h_change = gemmi::HydrogenChange::Remove;
 
-  MonArguments mon_args;
-  if (h_change != gemmi::HydrogenChange::Remove)
-    mon_args = get_monomer_args(p.options);
-
-  if (p.options[Verbose])
-    std::printf("Reading coordinates from %s\n", input.c_str());
   gemmi::CoorFormat input_format = coor_format_as_enum(p.options[FormatIn]);
   if (input_format == gemmi::CoorFormat::Unknown)
     input_format = gemmi::coor_format_from_ext_gz(input);
   gemmi::CoorFormat output_format = gemmi::coor_format_from_ext_gz(output);
   bool preserve_doc = (input_format == gemmi::CoorFormat::Mmcif &&
                        output_format == gemmi::CoorFormat::Mmcif);
+
+  MonArguments mon_args;
+  if (h_change != gemmi::HydrogenChange::Remove) {
+    bool needs_monlib = input_format != gemmi::CoorFormat::ChemComp;
+    mon_args = get_monomer_args(p.options, needs_monlib);
+  }
+
+  if (p.options[Verbose])
+    std::printf("Reading coordinates from %s\n", input.c_str());
   try {
     gemmi::Structure st;
     std::unique_ptr<cif::Document> doc;
-    if (preserve_doc)
+    if (preserve_doc || mon_args.has_plus())
       doc.reset(new cif::Document);
     st = gemmi::read_structure_gz(input, input_format, doc.get());
     if (st.models.empty() || st.models[0].chains.empty()) {
@@ -126,13 +129,11 @@ int GEMMI_MAIN(int argc, char **argv) {
       read_monomer_lib_and_user_files(monlib, wanted, mon_args, doc.get());
       if (!wanted.empty())
         gemmi::fail("Please create definitions for missing monomers.");
-      if (p.options[Update]) {
-        std::string msg = monlib.update_old_atom_names(st);
-        std::printf("%s", msg.c_str());
-      }
+      if (p.options[Update])
+        monlib.update_old_atom_names(st, {&gemmi::Logger::to_stdout});
       for (size_t i = 0; i != st.models.size(); ++i) {
         // preparing topology modifies hydrogens in the model
-        prepare_topology(st, monlib, i, h_change, p.options[Sort], &std::cerr);
+        prepare_topology(st, monlib, i, h_change, p.options[Sort], {&gemmi::Logger::to_stderr});
       }
     }
     if (p.options[Verbose])
@@ -141,7 +142,7 @@ int GEMMI_MAIN(int argc, char **argv) {
     if (p.options[Verbose])
       std::printf("Writing coordinates to %s\n", output.c_str());
     gemmi::Ofstream os(output, &std::cout);
-    if (gemmi::coor_format_from_ext_gz(output) == gemmi::CoorFormat::Pdb) {
+    if (output_format == gemmi::CoorFormat::Pdb) {
       shorten_ccd_codes(st);
       gemmi::write_pdb(st, os.ref());
     } else {

@@ -2,6 +2,7 @@
 //
 // CIF parser (based on PEGTL) with pluggable actions,
 // and a set of actions that prepare Document.
+// To just read the CIF format, include read_cif.hpp instead.
 
 #ifndef GEMMI_CIF_HPP_
 #define GEMMI_CIF_HPP_
@@ -14,10 +15,7 @@
 //#include "third_party/tao/pegtl/contrib/tracer.hpp"  // for debugging
 
 #include "cifdoc.hpp" // for Document, etc
-#include "input.hpp"  // for CharArray
-#if defined(_WIN32)
-#include "fileutil.hpp" // for file_open
-#endif
+#include "fileutil.hpp" // for CharArray, file_open
 
 #if defined(_MSC_VER)
 #pragma warning(push)
@@ -270,12 +268,21 @@ template<typename Input> void parse_input(Document& d, Input&& in) {
   pegtl::parse<rules::file, Action, Errors>(in, d);
 }
 
-template<typename Input> Document read_input(Input&& in) {
+template<typename Input> Document read_input(Input&& in, int check_level=1) {
   Document doc;
   doc.source = in.source();
   parse_input(doc, in);
-  check_for_missing_values(doc);
-  check_for_duplicates(doc);
+  if (check_level > 0) {
+    check_for_missing_values(doc);
+    check_for_duplicates(doc);
+    if (check_level > 1) {
+      for (const cif::Block& block : doc.blocks) {
+        if (block.name == " ")
+          fail(doc.source + ": missing block name (bare data_)");
+        check_empty_loops(block, doc.source);
+      }
+    }
+  }
   return doc;
 }
 
@@ -285,7 +292,7 @@ size_t parse_one_block(Document& d, Input&& in) {
   return in.byte();
 }
 
-// pegtl::read_input may use mmap and be faster, but does not work
+// pegtl::file_input may use mmap and be faster, but does not work
 // on Windows with Unicode filenames.
 #if defined(_WIN32)
 #define GEMMI_CIF_FILE_INPUT(in, path) \
@@ -295,30 +302,25 @@ size_t parse_one_block(Document& d, Input&& in) {
   tao::pegtl::file_input<> in(path)
 #endif
 
-inline Document read_file(const std::string& filename) {
+inline Document read_file(const std::string& filename, int check_level=1) {
   GEMMI_CIF_FILE_INPUT(in, filename);
-  return read_input(in);
+  return read_input(in, check_level);
 }
 
-inline Document read_string(const std::string& data) {
-  pegtl::memory_input<> in(data, "string");
-  return read_input(in);
-}
-
-inline Document read_memory(const char* data, size_t size, const char* name) {
+inline Document read_memory(const char* data, size_t size, const char* name, int check_level=1) {
   pegtl::memory_input<> in(data, size, name);
-  return read_input(in);
+  return read_input(in, check_level);
 }
 
-inline Document read_cstream(std::FILE *f, size_t bufsize, const char* name) {
+inline Document read_cstream(std::FILE *f, size_t bufsize, const char* name, int check_level=1) {
   pegtl::cstream_input<> in(f, bufsize, name);
-  return read_input(in);
+  return read_input(in, check_level);
 }
 
-inline Document read_istream(std::istream &is,
-                             size_t bufsize, const char* name) {
+inline Document read_istream(std::istream &is, size_t bufsize, const char* name,
+                             int check_level=1) {
   pegtl::istream_input<> in(is, bufsize, name);
-  return read_input(in);
+  return read_input(in, check_level);
 }
 
 
@@ -330,7 +332,7 @@ template<> struct CheckAction<rules::missing_value> {
   }
 };
 
-template<typename Input> bool check_syntax(Input&& in, std::string* msg) {
+template<typename Input> bool try_parse(Input&& in, std::string* msg) {
   try {
     return pegtl::parse<rules::file, CheckAction, Errors>(in);
   } catch (pegtl::parse_error& e) {
@@ -343,33 +345,33 @@ template<typename Input> bool check_syntax(Input&& in, std::string* msg) {
 // A function for transparent reading of normal and compressed files.
 // T should have the same traits as BasicInput and MaybeGzipped.
 template<typename T>
-Document read(T&& input) {
-  if (input.is_stdin())
-    return read_cstream(stdin, 16*1024, "stdin");
+Document read(T&& input, int check_level=1) {
   if (CharArray mem = input.uncompress_into_buffer())
-    return read_memory(mem.data(), mem.size(), input.path().c_str());
-  return read_file(input.path());
+    return read_memory(mem.data(), mem.size(), input.path().c_str(), check_level);
+  if (input.is_stdin())
+    return read_cstream(stdin, 16*1024, "stdin", check_level);
+  return read_file(input.path(), check_level);
 }
 
 template<typename T>
-bool check_syntax_any(T&& input, std::string* msg) {
+bool check_syntax(T&& input, std::string* msg) {
   if (CharArray mem = input.uncompress_into_buffer()) {
     pegtl::memory_input<> in(mem.data(), mem.size(), input.path());
-    return check_syntax(in, msg);
+    return try_parse(in, msg);
   }
   GEMMI_CIF_FILE_INPUT(in, input.path());
-  return check_syntax(in, msg);
+  return try_parse(in, msg);
 }
 
 template<typename T>
 size_t read_one_block(Document& d, T&& input, size_t limit) {
-  if (input.is_stdin())
-    return parse_one_block(d, pegtl::cstream_input<>(stdin, 16*1024, "stdin"));
   if (input.is_compressed()) {
     CharArray mem = input.uncompress_into_buffer(limit);
     return parse_one_block(d, pegtl::memory_input<>(mem.data(), mem.size(),
                                                     input.path().c_str()));
   }
+  if (input.is_stdin())
+    return parse_one_block(d, pegtl::cstream_input<>(stdin, 16*1024, "stdin"));
   GEMMI_CIF_FILE_INPUT(in, input.path());
   return parse_one_block(d, std::move(in));
 }

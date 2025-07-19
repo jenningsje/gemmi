@@ -7,8 +7,8 @@
 
 #include <cstdlib>           // for atoi
 #include <cstring>           // for memcpy
-#include <gemmi/model.hpp>
-#include <gemmi/util.hpp>    // for rtrim_str
+#include "model.hpp"
+#include "util.hpp"          // for rtrim_str
 #include <mmdb2/mmdb_manager.h>
 
 namespace gemmi {
@@ -31,8 +31,9 @@ void strcpy_to_mmdb(char (&dest)[N], const std::string& src) {
 
 inline void set_seqid_in_mmdb(int* seqnum, mmdb::InsCode& icode, SeqId seqid) {
   *seqnum = *seqid.num;
-  icode[0] = seqid.icode;
-  icode[1] = '\0';
+  icode[0] = icode[1] = '\0';
+  if (seqid.has_icode())
+    icode[0] = seqid.icode;
 }
 
 inline SeqId seqid_from_mmdb(int seqnum, const mmdb::InsCode& inscode) {
@@ -53,7 +54,7 @@ inline mmdb::CisPep* cispep_to_mmdb(const CisPep& g, int ser_num, int model_num)
   return m;
 }
 
-inline CisPep cispep_from_mmdb(const mmdb::CisPep& m, const std::string& model_str) {
+inline CisPep cispep_from_mmdb(const mmdb::CisPep& m, int model_num) {
   CisPep g;
   g.partner_c.res_id.name = m.pep1;
   g.partner_c.res_id.seqid = seqid_from_mmdb(m.seqNum1, m.icode1);
@@ -61,12 +62,79 @@ inline CisPep cispep_from_mmdb(const mmdb::CisPep& m, const std::string& model_s
   g.partner_n.res_id.name = m.pep2;
   g.partner_n.res_id.seqid = seqid_from_mmdb(m.seqNum2, m.icode2);
   g.partner_n.chain_name = m.chainID2;
-  g.model_str = model_str;
+  g.model_num = model_num;
   g.reported_angle = m.measure;
   return g;
 }
 
-inline mmdb::Manager* copy_to_mmdb(const Structure& st, mmdb::Manager* manager) {
+inline void transfer_links_to_mmdb(const Structure& st,  mmdb::Manager* mol) {
+  // based on code provided by Paul Emsley
+  for (const Connection& con : st.connections) {
+    if (!con.partner1.res_id.seqid.num || !con.partner2.res_id.seqid.num)
+      continue;
+    mmdb::Link link{};
+    // partner1
+    strcpy_to_mmdb(link.atName1, con.partner1.atom_name);
+    link.aloc1[0] = con.partner1.altloc;
+    set_seqid_in_mmdb(&link.seqNum1, link.insCode1, con.partner1.res_id.seqid);
+    strcpy_to_mmdb(link.resName1, con.partner1.res_id.name);
+    strcpy_to_mmdb(link.chainID1, con.partner1.chain_name);
+    // partner2
+    strcpy_to_mmdb(link.atName2, con.partner2.atom_name);
+    link.aloc2[0] = con.partner2.altloc;
+    set_seqid_in_mmdb(&link.seqNum2, link.insCode2, con.partner2.res_id.seqid);
+    strcpy_to_mmdb(link.resName2, con.partner2.res_id.name);
+    strcpy_to_mmdb(link.chainID2, con.partner2.chain_name);
+    if (con.reported_distance > 0)
+      link.dist = con.reported_distance;
+    if (con.asu == Asu::Different) {
+      link.s2 = con.reported_sym[0];
+      link.i2 = link.i1 + con.reported_sym[1];
+      link.j2 = link.j1 + con.reported_sym[2];
+      link.k2 = link.k1 + con.reported_sym[3];
+    }
+    // add links to models
+    for (int imod = 1; imod <= mol->GetNumberOfModels(); imod++)
+      if (mmdb::Model* model_p = mol->GetModel(imod))
+        model_p->AddLink(new mmdb::Link(link));
+  }
+}
+
+// ignoring LinkR's here
+inline void transfer_links_from_mmdb(mmdb::LinkContainer& mmdb_links, Structure& st) {
+  for (int i = 0; i < mmdb_links.Length(); ++i) {
+    mmdb::Link& link = *static_cast<mmdb::Link*>(mmdb_links.GetContainerClass(i));
+    Connection con;
+    // partner1
+    con.partner1.atom_name = link.atName1;
+    con.partner1.altloc = link.aloc1[0];
+    con.partner1.res_id.seqid = seqid_from_mmdb(link.seqNum1, link.insCode1);
+    con.partner1.res_id.name = link.resName1;
+    con.partner1.chain_name = link.chainID1;
+    // partner2
+    con.partner2.atom_name = link.atName2;
+    con.partner2.altloc = link.aloc2[0];
+    con.partner2.res_id.seqid = seqid_from_mmdb(link.seqNum2, link.insCode2);
+    con.partner2.res_id.name = link.resName2;
+    con.partner2.chain_name = link.chainID2;
+    con.reported_distance = link.dist;
+    if (link.s1 == link.s2 && link.i1 == link.i2 && link.j1 == link.j2 && link.k1 == link.k2) {
+      con.asu = Asu::Same;
+    } else {
+      con.asu = Asu::Different;
+      if (link.s1 == 1)
+        con.reported_sym[0] = link.s2;
+      con.reported_sym[1] = link.i2 - link.i1;
+      con.reported_sym[2] = link.j2 - link.j1;
+      con.reported_sym[3] = link.k2 - link.k1;
+    }
+    // for LinkR we'd also have:
+    // con.link_id = link.linkRID;
+    st.connections.push_back(con);
+  }
+}
+
+inline void copy_to_mmdb(const Structure& st, mmdb::Manager* manager) {
   for (const std::string& s : st.raw_remarks) {
     std::string line = rtrim_str(s);
     manager->PutPDBString(line.c_str());
@@ -80,7 +148,9 @@ inline mmdb::Manager* copy_to_mmdb(const Structure& st, mmdb::Manager* manager) 
     for (const Chain& chain : model.chains) {
       mmdb::Chain* chain2 = model2->CreateChain(chain.name.c_str());
       for (const Residue& res : chain.residues) {
-        const char icode[2] = {res.seqid.icode, '\0'};
+        char icode[2] = {};
+        if (res.seqid.has_icode())
+          icode[0] = res.seqid.icode;
         mmdb::Residue* res2 = chain2->GetResidueCreate(res.name.c_str(),
                                                        *res.seqid.num,
                                                        icode,
@@ -154,13 +224,13 @@ inline mmdb::Manager* copy_to_mmdb(const Structure& st, mmdb::Manager* manager) 
     int ser_num = 0;
     for (const CisPep& cispep : st.cispeps) {
       // In the PDB, CISPEP records have modNum=0 if there is only one model
-      int modnum = st.models.size() > 1 ? std::stoi(cispep.model_str) : 0;
+      int modnum = st.models.size() > 1 ? cispep.model_num : 0;
       int model_no = std::max(1, modnum);  // GetModel() takes 1-based index
       if (mmdb::Model* m_model = manager->GetModel(model_no))
         m_model->AddCisPep(cispep_to_mmdb(cispep, ++ser_num, modnum));
     }
   }
-  return manager;
+  transfer_links_to_mmdb(st, manager);
 }
 
 
@@ -230,7 +300,7 @@ inline Chain copy_chain_from_mmdb(mmdb::Chain& m_chain) {
 }
 
 inline Model copy_model_from_mmdb(mmdb::Model& m_model) {
-  Model model(std::to_string(m_model.GetSerNum()));
+  Model model(m_model.GetSerNum());
   int n = m_model.GetNumberOfChains();
   model.chains.reserve(n);
   for (int i = 0; i < n; ++i)
@@ -251,11 +321,15 @@ inline Structure copy_from_mmdb(mmdb::Manager* manager) {
   for (int i = 1; i <= n; ++i)
     if (mmdb::Model* m_model = manager->GetModel(i)) {
       st.models.push_back(copy_model_from_mmdb(*m_model));
-      const std::string& model_name = st.models.back().name;
+      int model_num = st.models.back().num;
       for (int j = 1; j <= m_model->GetNumberOfCisPeps(); ++j)
         if (const mmdb::CisPep* m_cispep = m_model->GetCisPep(j))
-          st.cispeps.push_back(cispep_from_mmdb(*m_cispep, model_name));
+          st.cispeps.push_back(cispep_from_mmdb(*m_cispep, model_num));
     }
+  if (n > 0) {
+    mmdb::Model* mmdb_model = manager->GetModel(1);
+    transfer_links_from_mmdb(*mmdb_model->GetLinks(), st);
+  }
   return st;
 }
 
@@ -267,7 +341,7 @@ inline Structure copy_from_mmdb(mmdb::Manager* manager) {
 // Example 1.
 // Read a coordinate file using gemmi and write it to pdb using mmdb.
 
-#include <gemmi/mmread.hpp>
+#include <gemmi/mmread_gz.hpp>
 #include <gemmi/mmdb.hpp>
 
 // two arguments expected: input and output paths.
@@ -278,7 +352,7 @@ int main (int argc, char** argv) {
   mmdb::InitMatType();
   mmdb::Manager* manager = new mmdb::Manager();
   try {
-    gemmi::Structure st = gemmi::read_structure_file(argv[1]);
+    gemmi::Structure st = gemmi::read_structure_gz(argv[1]);
     st.merge_chain_parts();
     gemmi::copy_to_mmdb(st, manager);
   } catch(std::runtime_error& e) {

@@ -24,7 +24,12 @@ def has_gemmi():
               '\n  returncode:', e.returncode)
         return False
     assert v.startswith(b'gemmi 0.')
-    return gemmi is None or v.split()[1].decode() == gemmi.__version__
+    prog_ver = v.split()[1].decode()
+    if gemmi and gemmi.__version__ != prog_ver:
+        print(f'NOTE: gemmi {prog_ver} in $PATH mismatches',
+              f'gemmi module {gemmi.__version__}. Skipping.')
+        return False
+    return True
 
 @unittest.skipIf(not has_gemmi(), "Program gemmi not found.")
 class TestProg(unittest.TestCase):
@@ -45,7 +50,7 @@ class TestProg(unittest.TestCase):
         self.assertEqual(expected_lines, output_lines)
 
     def test_fprime1(self):
-        # example from utils.rst
+        # example from program.rst
         self.do('''\
 $ gemmi fprime --wavelength=1.2 Se
 Element	 E[eV]	Wavelength[A]	   f'   	  f"
@@ -127,7 +132,7 @@ $ gemmi sfcalc --dmin=9 --rate=4 --blur=70 --rcut=1e-7 --test -v tests/1pfe.cif.
 ''')  # noqa: E501
 #RMSE=0.00054812  8.627e-05%  max|dF|=0.002943  R=0.000%  <dPhi>=3.569e-06
 
-    # example from utils.rst
+    # example from program.rst
     def test_align_text(self):
         self.do('''\
 $ gemmi align -p --match=0 --gapo=0 --text-align Saturday Sunday
@@ -137,7 +142,7 @@ Saturday
 S--unday
 ''')
 
-    def test_cif2mtz_5e5z(self):
+    def test_mtz2cif_5e5z(self):
         self.do('''\
 $ gemmi mtz2cif tests/5e5z.mtz -
 [...] -158 -155

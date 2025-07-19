@@ -11,7 +11,7 @@
 
 #include <gemmi/fail.hpp>       // for fail
 #include <gemmi/sprintf.hpp>
-#include <gemmi/resinfo.hpp>
+#include <gemmi/resinfo.hpp>    // for find_tabulated_residue
 #include <gemmi/util.hpp>
 
 namespace gemmi {
@@ -38,8 +38,6 @@ namespace gemmi {
     os.write(buf, 81); \
   } while(0)
 
-namespace {
-
 bool use_hetatm(const Residue& res) {
   if (res.het_flag == 'H')
     return true;
@@ -51,6 +49,8 @@ bool use_hetatm(const Residue& res) {
     return true;
   return !find_tabulated_residue(res.name).is_standard();
 }
+
+namespace {
 
 // works for non-negative values only
 void base36_encode(char* buffer, int width, int value) {
@@ -240,8 +240,7 @@ void write_chain_atoms(const Chain& chain, std::ostream& os,
       // 79-80  2s  charge
       int written_bytes = snprintf_z(buf, 82,
             "%-6s%5s %-4.4s%c%3.3s"
-            "%2s%5s   %8.3f%8.3f%8.3f"
-            "%6.2f%6.2f      %-4.4s%2s%c%c",
+            "%2s%5s   %8.3f%8.3f%8.3f",
             as_het ? "HETATM" : "ATOM",
             encode_serial_in_hybrid36(serial).data(),
             a.padded_name().c_str(),
@@ -253,7 +252,19 @@ void write_chain_atoms(const Chain& chain, std::ostream& os,
             // if they originally had one digit more and that digit was 5.
             a.pos.x > -5e-4 && a.pos.x < 0 ? 0 : a.pos.x + 1e-10,
             a.pos.y > -5e-4 && a.pos.y < 0 ? 0 : a.pos.y + 1e-10,
-            a.pos.z > -5e-4 && a.pos.z < 0 ? 0 : a.pos.z + 1e-10,
+            a.pos.z > -5e-4 && a.pos.z < 0 ? 0 : a.pos.z + 1e-10);
+      if GEMMI_UNLIKELY(written_bytes > 54) {
+        // The only items expected to overflow above are the coordinates,
+        // if the integer part of the number exceeds 5 characters.
+        // This happens when something goes wrong and the model is far from
+        // the origin. Such a model should be shifted; it can't be written it
+        // in a spec-conforming format: Real(8.3). Here we overwrite the last
+        // digits - trimming is better than overflowing the line.
+        snprintf_z(buf+38, 82-38, "%8.3f", a.pos.y);
+        snprintf_z(buf+46, 82-46, "%8.3f", a.pos.z);
+      }
+      snprintf_z(buf+54, 82-54,
+            "%6.2f%6.2f      %-4.4s%2s%c%c",
             // Occupancy is stored as single prec, but we know it's <= 1,
             // so no precision is lost even if it had 6 digits after dot.
             a.occ + 1e-6,
@@ -267,24 +278,6 @@ void write_chain_atoms(const Chain& chain, std::ostream& os,
             // Sometimes PDB files have explicit 0s (5M05); we ignore them.
             a.charge ? a.charge > 0 ? '0'+a.charge : '0'-a.charge : ' ',
             a.charge ? a.charge > 0 ? '+' : '-' : ' ');
-      if GEMMI_UNLIKELY(written_bytes > 80) {
-        // The only items expected to overflow above are the coordinates,
-        // if the integer part of the number exceeds 5 characters.
-        // This happens when something goes wrong and the model is far from
-        // the origin. Such a model should be shifted; it can't be written it
-        // in a spec-conforming format: Real(8.3). Here we overwrite the last
-        // digits - trimming is better than overflowing the line.
-        snprintf_z(buf+38, 82-38, "%8.3f", a.pos.y);
-        snprintf_z(buf+46, 82-46, "%8.3f", a.pos.z);
-        snprintf_z(buf+54, 82-54,
-            "%6.2f%6.2f      %-4.4s%2s%c%c",
-            a.occ + 1e-6,
-            std::min(a.b_iso + 0.5e-5, 999.99),
-            res.segment.c_str(),
-            a.element.uname(),
-            a.charge ? a.charge > 0 ? '0'+a.charge : '0'-a.charge : ' ',
-            a.charge ? a.charge > 0 ? '+' : '-' : ' ');
-      }
       buf[80] = '\n';
       os.write(buf, 81);
       if (a.aniso.nonzero()) {
@@ -463,8 +456,8 @@ void write_pdb(const Structure& st, std::ostream& os, PdbWriteOptions opt) {
       }
   }
 
-  // MODRES
-  if (!opt.minimal_file)
+  if (!opt.minimal_file) {
+    // MODRES
     for (const ModRes& modres : st.mod_residues) {
       WRITEU("MODRES %4s %3.3s%2s %5s %3s  %-41.41s  %-8.8s\n",
             entry_id_4,
@@ -475,6 +468,27 @@ void write_pdb(const Structure& st, std::ostream& os, PdbWriteOptions opt) {
             modres.details.c_str(),
             modres.mod_id.c_str());
     }
+
+    // HET
+    if (!st.models.empty()) {
+      auto full_ccd_code = [&](const std::string& name) -> std::string {
+        for (const auto& mapping : st.shortened_ccd_codes)
+          if (mapping.second == name)
+            return "real CCD code: " + mapping.first;
+        return "";
+      };
+      for (const Chain& chain : st.models[0].chains)
+        for (const Residue& res : chain.residues)
+          if (use_hetatm(res) && !find_tabulated_residue(res.name).is_water()) {
+            WRITE("HET    %3s %2s%5s %6zu     %-51s\n",
+                  res.name.c_str(),
+                  chain.name.c_str(),
+                  write_seq_id(res.seqid).data(),
+                  res.atoms.size(),
+                  res.name[0] == '~' ? full_ccd_code(res.name).c_str() : "");
+          }
+    }
+  }
 
   // HETNAM - but it's used only for tilde-hetnam extension
   for (const auto& mapping : st.shortened_ccd_codes)
@@ -588,12 +602,14 @@ void write_pdb(const Structure& st, std::ostream& os, PdbWriteOptions opt) {
                 con.partner2.chain_name.c_str(),
                 write_seq_id(cra2.residue->seqid).data(),
                 "1555", im_pdb_symbol.c_str(), im_dist_str.c_str());
-          if (opt.use_linkr && !con.link_id.empty()) {
-            buf[4] = 'R';  // LINK -> LINKR
-            if (im_same_asu)
-              std::memset(buf+58, ' ', 14); // erase symmetry
+          if (im_same_asu && !con.link_id.empty())
+            std::memset(buf+58, ' ', 14); // erase symmetry
+          if ((opt.use_linkr ||opt.use_link_id) && !con.link_id.empty()) {
+            if (opt.use_linkr)
+              buf[4] = 'R';  // LINK -> LINKR
             // overwrite distance with link_id
-            snprintf_z(buf+72, 82-72, "%-8s\n", con.link_id.c_str());
+            if (opt.use_linkr || opt.use_link_id)
+              snprintf_z(buf+72, 82-72, "%-8s\n", con.link_id.c_str());
           }
           buf[80] = '\n';
           os.write(buf, 81);
@@ -604,7 +620,7 @@ void write_pdb(const Structure& st, std::ostream& os, PdbWriteOptions opt) {
     if (opt.cispep_records) {
       int counter = 0;
       for (const CisPep& cispep : st.cispeps) {
-        WRITE("CISPEP%4d %3.3s%2s %5s   %3.3s%2s %5s %9s %12.2f %20s",
+        WRITE("CISPEP%4d %3.3s%2s %5s   %3.3s%2s %5s %9d %12.2f %20s",
               ++counter,
               cispep.partner_c.res_id.name.c_str(),
               cispep.partner_c.chain_name.c_str(),
@@ -612,7 +628,7 @@ void write_pdb(const Structure& st, std::ostream& os, PdbWriteOptions opt) {
               cispep.partner_n.res_id.name.c_str(),
               cispep.partner_n.chain_name.c_str(),
               write_seq_id(cispep.partner_n.res_id.seqid).data(),
-              st.models.size() > 1 ? cispep.model_str.c_str() : "0",
+              st.models.size() > 1 ? cispep.model_num : 0,
               std::isnan(cispep.reported_angle) ? 0. : cispep.reported_angle,
               "");
         if (counter == 9999)
@@ -660,16 +676,8 @@ void write_pdb(const Structure& st, std::ostream& os, PdbWriteOptions opt) {
   if (opt.atom_records) {
     for (const Model& model : st.models) {
       int serial = 0;
-      if (st.models.size() > 1) {
-        // according to the spec model name in mmCIF may not be numeric
-        std::string name = model.name;
-        for (char c : name)
-          if (!std::isdigit(c)) {
-            name = std::to_string(&model - &st.models[0] + 1);
-            break;
-          }
-        WRITE("MODEL %8s %65s", name.c_str(), "");
-      }
+      if (st.models.size() > 1)
+        WRITE("MODEL %8d %65s", model.num, "");
       for (const Chain& chain : model.chains)
         write_chain_atoms(chain, os, serial, opt);
       if (st.models.size() > 1)

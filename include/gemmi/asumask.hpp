@@ -7,6 +7,7 @@
 
 #include <cstdint>
 
+#include "util.hpp"  // for in_vector
 #include "grid.hpp"
 
 namespace gemmi {
@@ -19,8 +20,6 @@ struct AsuBrick {
   int volume;
 
   AsuBrick(int a, int b, int c)
-    // For now we don't check which boundaries are included in the asymmetric unit,
-    // we assume inequalities are not strict (e.g. 0<=x<=1/2) except '<1'.
     : size({a,b,c}), incl({a < denom, b < denom, c < denom}), volume(a*b*c) {}
 
   std::string str() const {
@@ -31,7 +30,7 @@ struct AsuBrick {
       s += "0<=";
       s += "xyz"[i];
       s += incl[i] ? "<=" : "<";
-      impl::append_fraction(s, impl::get_op_fraction(size[i]));
+      append_op_fraction(s, size[i]);
     }
     return s;
   }
@@ -62,7 +61,6 @@ struct AsuBrick {
 };
 
 // Returns asu brick upper bound. Lower bound is always (0,0,0).
-// Currently we do not check if the boundaries are includedFor now bounds are assumed
 // Brute force method that considers 8^3 sizes.
 inline AsuBrick find_asu_brick(const SpaceGroup* sg) {
   if (sg == nullptr)
@@ -180,10 +178,7 @@ inline AsuBrick find_asu_brick(const SpaceGroup* sg) {
     if (found)
       printf("[debug2] checkpoints failed\n");
 #endif
-    if (std::find(grid.data.begin(), grid.data.end(), 0) != grid.data.end())
-      return false;
-
-    return true;
+    return !in_vector(std::int8_t(0), grid.data);
   };
 
   std::vector<AsuBrick> possible_bricks;
@@ -191,7 +186,7 @@ inline AsuBrick find_asu_brick(const SpaceGroup* sg) {
     for (int b : allowed_sizes)
       for (int c : allowed_sizes) {
         AsuBrick brick(a, b, c);
-        if (brick.volume * n_ops >= brick.denom * brick.denom * brick.denom)
+        if (brick.volume * n_ops >= AsuBrick::denom * AsuBrick::denom * AsuBrick::denom)
           possible_bricks.push_back(brick);
       }
   // the last item is the full unit cell, no need to check it
@@ -223,32 +218,22 @@ template<typename T, typename V=std::int8_t> struct MaskedGrid {
   Grid<T>* grid;
 
   struct iterator {
-    MaskedGrid& parent;
-    size_t index;
-    int u = 0, v = 0, w = 0;
-    iterator(MaskedGrid& parent_, size_t index_)
-      : parent(parent_), index(index_) {}
+    typename GridBase<T>::iterator grid_iterator;
+    const std::vector<V>& mask_ref;
+    iterator(typename GridBase<T>::iterator it, const std::vector<V>& mask)
+      : grid_iterator(it), mask_ref(mask) {}
     iterator& operator++() {
       do {
-        ++index;
-        if (++u == parent.grid->nu) {
-          u = 0;
-          if (++v == parent.grid->nv) {
-            v = 0;
-            ++w;
-          }
-        }
-      } while (index != parent.mask.size() && parent.mask[index] != 0);
+        ++grid_iterator;
+      } while (grid_iterator.index != mask_ref.size() && mask_ref[grid_iterator.index] != 0);
       return *this;
     }
-    typename GridBase<T>::Point operator*() {
-      return {u, v, w, &parent.grid->data[index]};
-    }
-    bool operator==(const iterator &o) const { return index == o.index; }
-    bool operator!=(const iterator &o) const { return index != o.index; }
+    typename GridBase<T>::Point operator*() { return *grid_iterator; }
+    bool operator==(const iterator &o) const { return grid_iterator == o.grid_iterator; }
+    bool operator!=(const iterator &o) const { return grid_iterator != o.grid_iterator; }
   };
-  iterator begin() { return {*this, 0}; }
-  iterator end() { return {*this, mask.size()}; }
+  iterator begin() { return {grid->begin(), mask}; }
+  iterator end() { return {grid->end(), mask}; }
 };
 
 template<typename V=std::int8_t>

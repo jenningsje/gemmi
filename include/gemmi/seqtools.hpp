@@ -13,11 +13,16 @@ namespace gemmi {
 constexpr double h2o_weight() { return 2 * 1.00794 + 15.9994; }
 
 inline double calculate_sequence_weight(const std::vector<std::string>& seq,
-                                        double unknown=0.) {
+                                        double unknown=100.) {
   double weight = 0.;
   for (const std::string& item : seq) {
-    ResidueInfo res_info = find_tabulated_residue(Entity::first_mon(item));
-    weight += res_info.found() ? res_info.weight : unknown;
+    size_t idx = find_tabulated_residue_idx(Entity::first_mon(item));
+    if (idx == unknown_tabulated_residue_idx())
+      weight += unknown;
+    else
+      weight += get_residue_info(idx).weight;
+    //ResidueInfo res_info = find_tabulated_residue(Entity::first_mon(item));
+    //weight += res_info.found() ? res_info.weight : unknown;
   }
   return weight - (seq.size() - 1) * h2o_weight();
 }
@@ -37,7 +42,7 @@ inline std::string pdbx_one_letter_code(const std::vector<std::string>& seq,
   std::string r;
   for (const std::string& item : seq) {
     std::string code = Entity::first_mon(item);
-    ResidueInfo ri = find_tabulated_residue(code);
+    const ResidueInfo ri = find_tabulated_residue(code);
     if (ri.is_standard() && ri.kind == kind)
       r += ri.one_letter_code;
     else

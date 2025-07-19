@@ -2,8 +2,8 @@
 //
 // MTZ info
 
+#include <climits>            // for INT_MAX
 #include <cstdio>
-#include <iostream>  // for cerr
 #include <unordered_map>
 #include <gemmi/mtz.hpp>
 #include <gemmi/asudata.hpp>  // for AsuData
@@ -29,7 +29,7 @@ struct MtzArg: public Arg {
 enum OptionIndex {
   Headers=4, Dump, PrintBatch, PrintBatches, ExpandedBatches, PrintAppendix,
   PrintTsv, PrintStats, PrintHistogram, PrintCells, CheckAsu,
-  Compare, ToggleEndian, NoIsym
+  Compare, ToggleEndian
 };
 
 const option::Descriptor Usage[] = {
@@ -51,8 +51,9 @@ const option::Descriptor Usage[] = {
     "  -e  \t(with -B or -b) expanded info from batch headers." },
   { PrintAppendix, 0, "A", "appendix", Arg::None,
     "  -A, --appendix  \tPrint appended text." },
-  { PrintTsv, 0, "", "tsv", Arg::None,
-    "  --tsv  \tPrint all the data as tab-separated values." },
+  { PrintTsv, 0, "", "tsv", Arg::Optional,
+    "  --tsv[=isym]  \tPrint all the data as tab-separated values.\n"
+    "\t--tsv=isym uses M/ISYM to show original (not asu) HKL." },
   { PrintStats, 0, "s", "stats", Arg::None,
     "  -s, --stats  \tPrint column statistics (completeness, mean, etc)." },
   { PrintHistogram, 0, "", "histogram", Arg::Required,
@@ -65,13 +66,11 @@ const option::Descriptor Usage[] = {
     "  --compare=FILE  \tCompare two MTZ files." },
   { ToggleEndian, 0, "", "toggle-endian", Arg::None,
     "  --toggle-endian  \tToggle assumed endianness (little <-> big)." },
-  { NoIsym, 0, "", "no-isym", Arg::None,
-    "  --no-isym  \tDo not apply symmetry from M/ISYM column." },
   { 0, 0, 0, 0, 0, 0 }
 };
 
 void print_cell_parameters(const char* prefix, const gemmi::UnitCell& cell) {
-  printf("%s %g %7g %7g  %6g %6g %6g\n", prefix,
+  printf("%s %7g %7g %7g  %6g %6g %6g\n", prefix,
          cell.a, cell.b, cell.c, cell.alpha, cell.beta, cell.gamma);
 }
 
@@ -90,8 +89,18 @@ void dump(const Mtz& mtz) {
   printf("Number of Batches = %zu\n", mtz.batches.size());
   printf("Missing values marked as: %g\n", mtz.valm);
   print_cell_parameters("Global Cell (obsolete): ", mtz.cell);
-  printf("Resolution: %.2f - %.2f A\n",
-         mtz.resolution_high(), mtz.resolution_low());
+  if (mtz.resolution_high()<0.5) {
+    printf("Resolution: %.4f - %.2f A\n",
+           mtz.resolution_high(), mtz.resolution_low());
+  }
+  else if (mtz.resolution_high()<1.0) {
+    printf("Resolution: %.3f - %.2f A\n",
+           mtz.resolution_high(), mtz.resolution_low());
+  }
+  else {
+    printf("Resolution: %.2f - %.2f A\n",
+           mtz.resolution_high(), mtz.resolution_low());
+  }
   printf("Sort Order: %d %d %d %d %d\n",
          mtz.sort_order[0], mtz.sort_order[1], mtz.sort_order[2],
          mtz.sort_order[3], mtz.sort_order[4]);
@@ -113,9 +122,13 @@ void dump(const Mtz& mtz) {
     }
   }
   printf("\nHeader info (run with option -s for recalculated statistics):\n");
-  printf("Column    Type  Dataset    Min        Max\n");
+  // get maximum column size
+  int col_size = 12;
   for (const Mtz::Column& col : mtz.columns)
-    printf("%-12s %c %2d %12.6g %10.6g\n",
+    col_size = std::max(col_size, (int)col.label.length());
+  printf("\n %-*s  Type  Dataset          Min        Max\n", col_size, "Column");
+  for (const Mtz::Column& col : mtz.columns)
+    printf(" %-*s    %c      %2d   %12.6g %10.6g\n", col_size,
            col.label.c_str(), col.type, col.dataset_id,
            col.min_value, col.max_value);
   if (mtz.history.empty()) {
@@ -123,7 +136,7 @@ void dump(const Mtz& mtz) {
   } else {
     printf("\nHistory (%zu lines):\n", mtz.history.size());
     for (const std::string& hline : mtz.history)
-      printf("%s\n", hline.c_str());
+      printf(" %s\n", hline.c_str());
   }
   if (!mtz.batches.empty()) {
     int prev_ds_id = -INT_MAX;
@@ -357,7 +370,7 @@ void print_stats(const Mtz& mtz) {
     }
   }
   printf("Resolution: %.5f - %.5f A\n", mtz.resolution_high(), mtz.resolution_low());
-  printf("column type @dataset  completeness        min       max"
+  printf("column type @dataset     filled           min       max"
          "       mean   stddev\n");
   for (size_t i = 0; i != column_stats.size(); ++i) {
     const Mtz::Column& col = mtz.columns[i];
@@ -453,7 +466,7 @@ void check_asu(const Mtz& mtz, bool tnt) {
 
 void compare_mtz(Mtz& mtz1, const char* path2, bool verbose) {
   Mtz mtz2;
-  mtz2.read_input(gemmi::MaybeGzipped(path2), true);
+  mtz2.read_file_gz(path2, true);
   if (mtz1.spacegroup != mtz2.spacegroup)
     printf("Spacegroup differs:  %s  and  %s\n",
            mtz1.spacegroup_name.c_str(), mtz2.spacegroup_name.c_str());
@@ -523,8 +536,7 @@ void compare_mtz(Mtz& mtz1, const char* path2, bool verbose) {
   }
 }
 
-template<typename Stream>
-void print_mtz_info(Stream&& stream, const char* path,
+void print_mtz_info(gemmi::AnyStream& stream, const char* path,
                     const std::vector<option::Option>& options) {
   Mtz mtz;
   try {
@@ -534,23 +546,17 @@ void print_mtz_info(Stream&& stream, const char* path,
   } catch (std::runtime_error& e) {
     gemmi::fail(std::string(e.what()) + ": " + path);
   }
-  if (options[Headers]) {
-    char buf[81] = {0};
-    mtz.seek_headers(stream);
-    while (stream.read(buf, 80)) {
-      printf("%s\n", gemmi::rtrim_str(buf).c_str());
-      if (gemmi::ialpha3_id(buf) == gemmi::ialpha3_id("END"))
-        break;
-    }
-  }
   if (options[Verbose])
-    mtz.warnings = &std::cerr;
-  mtz.read_main_headers(stream);
+    mtz.logger.callback = gemmi::Logger::to_stderr;
+  bool with_data = options[PrintTsv] || options[PrintStats] || options[PrintHistogram] ||
+                   options[CheckAsu] || options[Compare];
+  mtz.read_raw_data(stream, with_data);
+  std::vector<std::string> save_headers;
+  mtz.read_main_headers(stream, options[Headers] ? &save_headers : nullptr);
+  for (const std::string& header : save_headers)
+    printf("%s\n", gemmi::rtrim_str(header).c_str());
   mtz.read_history_and_batch_headers(stream);
   mtz.setup_spacegroup();
-  if (options[PrintTsv] || options[PrintStats] || options[PrintHistogram] ||
-      options[CheckAsu] || options[Compare])
-    mtz.read_raw_data(stream);
   if (options[Dump] ||
       !(options[PrintBatch] || options[PrintBatches] || options[PrintTsv] ||
         options[PrintStats] || options[PrintHistogram] ||
@@ -574,20 +580,21 @@ void print_mtz_info(Stream&& stream, const char* path,
       print_batch(b, options[ExpandedBatches]);
   if (options[PrintAppendix])
     printf("%s", mtz.appended_text.c_str());
-  if (mtz.has_data() && !options[NoIsym])
-    mtz.switch_to_original_hkl();
   if (options[PrintCells])
     print_cells(mtz);
   for (const option::Option* opt = options[PrintHistogram]; opt; opt = opt->next())
     print_column_statistics(mtz, opt->arg);
-  if (options[PrintTsv])
-    print_tsv(mtz);
   if (options[CheckAsu] || options[PrintStats])
     mtz.update_reso();
   if (options[PrintStats])
     print_stats(mtz);
   if (options[CheckAsu])
     check_asu(mtz, options[CheckAsu].arg[0] == 't');
+  if (const option::Option* opt = options[PrintTsv]) {
+    if (opt->arg && opt->arg[0] == 'i')
+      mtz.switch_to_original_hkl();
+    print_tsv(mtz);
+  }
   if (options[Compare])
     // here mtz gets sorted, so this option must be at the end
     compare_mtz(mtz, options[Compare].arg, options[Verbose]);
@@ -610,14 +617,7 @@ int GEMMI_MAIN(int argc, char **argv) {
         std::fflush(stderr);
       }
       gemmi::MaybeGzipped input(path);
-      if (input.is_stdin()) {
-        print_mtz_info(gemmi::FileStream{stdin}, path, p.options);
-      } else if (gemmi::CharArray mem = input.uncompress_into_buffer()) {
-        print_mtz_info(mem.stream(), path, p.options);
-      } else {
-        gemmi::fileptr_t f = gemmi::file_open(input.path().c_str(), "rb");
-        print_mtz_info(gemmi::FileStream{f.get()}, path, p.options);
-      }
+      print_mtz_info(*input.create_stream(), path, p.options);
     }
   } catch (std::runtime_error& e) {
     std::fflush(stdout);

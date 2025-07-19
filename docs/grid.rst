@@ -121,18 +121,14 @@ Values are accessed with functions get_value() and set_value():
   >>> grid.get_value(-11, 13, 25)
   7.0
 
-.. _buffer_protocol:
-
-The data can be also accessed through the
-`buffer protocol <https://docs.python.org/3/c-api/buffer.html>`_.
-It means that you can use it as a NumPy array (Fortran-style contiguous)
-without copying the data:
+The data can be also accessed as a NumPy array (Fortran-style contiguous),
+without copying the data, through the `array` property:
 
 .. doctest::
   :skipif: numpy is None or sys.platform == 'win32'
 
   >>> import numpy
-  >>> array = numpy.array(grid, copy=False)
+  >>> array = grid.array
   >>> array.dtype
   dtype('float32')
   >>> array.shape
@@ -140,16 +136,6 @@ without copying the data:
   >>> numpy.argwhere(array == 7.0)
   array([[1, 1, 1]])
 
-The buffer protocol is not specific to NumPy -- any other Python library
-that supports this protocol can directly access the grid data.
-Alternatively, the grid can be viewed as a NumPy array through
-the `array` property:
-
-.. doctest::
-  :skipif: numpy is None or sys.platform == 'win32'
-
-  >>> grid.array.shape
-  (12, 12, 12)
 
 Symmetry
 --------
@@ -250,8 +236,8 @@ or when iterating the grid:
   >>> for point in grid:
   ...   if point.value != 0.: print(point)
   <gemmi.FloatGridBase.Point (0, 0, 0) -> 0.125>
-  <gemmi.FloatGridBase.Point (1, 1, 1) -> 7>
-  <gemmi.FloatGridBase.Point (11, 1, 11) -> 7>
+  <gemmi.FloatGridBase.Point (1, 1, 1) -> 7.0>
+  <gemmi.FloatGridBase.Point (11, 1, 11) -> 7.0>
 
 The point can be converted to its index (position in the array):
 
@@ -280,7 +266,7 @@ The other way around, we can find the grid point nearest to a position:
 .. doctest::
 
   >>> grid.get_nearest_point(_)
-  <gemmi.FloatGridBase.Point (6, 6, 6) -> 0>
+  <gemmi.FloatGridBase.Point (6, 6, 6) -> 0.0>
 
 
 Common operations
@@ -331,7 +317,7 @@ To set the whole grid to the same value use:
 
 To set the grid points in a certain radius from a specified position use::
 
-  void Grid<T>::set_points_around(const Position& ctr, double radius, T value)
+  void Grid<T>::set_points_around(const Position& ctr, double radius, T value, bool use_pbc=true)
 
 .. doctest::
   :skipif: numpy is None or sys.platform == 'win32'
@@ -356,72 +342,100 @@ a bulk :ref:`solvent mask <solventmask>`.
 Interpolation
 -------------
 
-To get a value corresponding to an arbitrary position,
-you may use trilinear interpolation of the 8 nearest nodes,
-or tricubic interpolation that uses 64 nodes.
+Interpolation is used to obtain a value corresponding to an arbitrary position.
+The most common interpolation methods are:
+
+* trilinear interpolation of the 8 nearest nodes,
+* tricubic interpolation that uses 64 nodes.
+
+Cubic interpolation is smoother than linear but may amplify noise.
+This is illustrated in the plots below, which show density along two lines
+in a grid filled with random numbers from [0, 1).
+Trilinear interpolation is shown in blue, and tricubic -- in red.
+The left plot shows density along a line in a random direction,
+while the right plot shows density along a line parallel to one of the axes.
+
+.. image:: img/trilinear-tricubic.png
+    :align: center
+    :scale: 100
+
+In the functions below, the choice of interpolation is specified
+using the `order` argument:
+
+* order=0 -- the nearest grid point value,
+* order=1 -- trilinear interpolation (default),
+* order=3 -- tricubic interpolation.
 
 **C++**
 
 ::
 
-  T Grid<T>::interpolate_value(const Fractional& fctr) const
-  T Grid<T>::interpolate_value(const Position& ctr) const
-
-  double Grid<T>::tricubic_interpolation(const Fractional& fctr) const
-  double Grid<T>::tricubic_interpolation(const Position& ctr) const
-
-  // calculates also derivatives
+  T Grid<T>::interpolate_value(const Fractional& fctr, int order=1) const
+  T Grid<T>::interpolate_value(const Position& ctr, int order=1) const
+  // You can also directly call the underlying functions
+  // trilinear_interpolation() and tricubic_interpolation().
+  // There is also a function that calculates derivatives:
   std::array<double,4> Grid<T>::tricubic_interpolation_der(double x, double y, double z) const
 
 **Python**
 
 .. doctest::
 
+  >>> # trilinear interpolation
   >>> grid.interpolate_value(gemmi.Fractional(1/24, 1/24, 1/24))
   0.890625
   >>> grid.interpolate_value(gemmi.Position(2, 3, 4))
   2.0333263874053955
-  >>> grid.tricubic_interpolation(gemmi.Fractional(1/24, 1/24, 1/24))
+  >>> # nearest value
+  >>> grid.interpolate_value(gemmi.Fractional(1/24, 1/24, 1/24), order=0)
+  7.0
+  >>> grid.interpolate_value(gemmi.Position(2, 3, 4), order=0)  # doctest: +ELLIPSIS
+  0.0
+  >>> # tricubic interpolation
+  >>> grid.interpolate_value(gemmi.Fractional(1/24, 1/24, 1/24), order=3)
   1.283477783203125
-  >>> grid.tricubic_interpolation(gemmi.Position(2, 3, 4))  # doctest: +ELLIPSIS
-  2.6075661737715...
-  >>> # calculate also derivatives in directions of unit cell axes
+  >>> grid.interpolate_value(gemmi.Position(2, 3, 4), order=3)  # doctest: +ELLIPSIS
+  2.607566...
+  >>> # calculate value and derivatives in the directions of unit cell axes
   >>> grid.tricubic_interpolation_der(gemmi.Fractional(1/24, 1/24, 1/24))
   [1.283477783203125, 35.523193359375, 36.343505859375, 35.523193359375]
 
-The cubic interpolation is smoother than linear, but may amplify the noise.
-This is illustrated on the plots below, which shows density along two lines
-in a grid that was filled with random numbers from [0, 1).
-Trilinear interpolation is blue, tricubic -- red.
-The left plot shows density along a line in a random direction,
-the right plot -- along a line parallel to one of the axes.
 
-.. image:: img/trilinear-tricubic.png
-    :align: center
-    :scale: 100
+*NumPy arrays*
 
-*Implementation notes*
+To interpolate the grid at positions listed as a NumPy array,
+use `interpolate_position_array()`, which takes a NumPy array of positions
+and returns a NumPy array of interpolated values:
 
-Tricubic interpolation, as described
-on `Wikipedia page <https://en.wikipedia.org/wiki/Tricubic_interpolation>`_ and in
-`Appendix B of a PHENIX paper <https://journals.iucr.org/d/issues/2018/06/00/ic5103/#APPB>`_,
-can be implemented either as 21 cubic interpolations, or using method
-introduced by `Lekien & Marsen <https://doi.org/10.1002/nme.1296>`_ in 2005,
-which involves 64x64 matrix of integral coefficients
-(see also this `blog post <http://ianfaust.com/2016/03/20/Tricubic/>`_).
-The latter method should be more efficient, but gemmi uses the former,
-which takes ~100 ns. If you'd like to speed it up or to get derivatives,
-contact developers.
+.. doctest::
+  :skipif: numpy is None
 
-*Optimization for Python*
+  >>> coords = numpy.array([[1, 2, 3], [2, 3, 4]], dtype=numpy.float32)
+  >>> grid.interpolate_position_array(coords)
+  array([0.4954875, 2.0333264], dtype=float32)
 
-If you have a large number of points, making a Python function call
-each time would be slow.
-If these points are on a regular 3D grid (which may not be aligned
+By default, it expects Cartesian coordinates and uses linear interpolation.
+This can be changed by providing optional arguments `to_frac: Transform`
+and `order: int`.
+
+`to_frac` transforms input coordinates to fractional coordinates.
+By default, it is a fractionalization matrix from the grid's unit cell.
+If your coordinates are already fractional, pass the identity matrix:
+
+.. doctest::
+  :skipif: numpy is None
+
+  >>> frac = numpy.array([[1/24, 1/24, 1/24]])
+  >>> grid.interpolate_position_array(frac, to_frac=gemmi.Transform())
+  array([0.890625], dtype=float32)
+
+----
+
+If the positions of interest are on a regular 3D grid (which may not be aligned
 with our grid) call `interpolate_values()` (with s at the end)
 with two arguments: a 3D NumPy array (for storing the results)
-and a :ref:`Transform <transform>` that relates indices of the array
-to positions in the grid:
+and a :ref:`Transform <transform>` that relates the array's indices
+to positions (in Angstroms) in the grid:
 
 .. doctest::
   :skipif: numpy is None
@@ -437,8 +451,26 @@ to positions in the grid:
   >>> arr[10, 10, 10]  # -> corresponds to Position(2, 3, 4)
   2.0333264
 
-(If your points are not on a regular grid -- get in touch -- there might be
-another way.)
+*One Grid to another*
+
+For rescaling, rotating and translating maps, we have functions that use values
+from one Grid to set values in another Grid.
+Currently, the API is not ideal and should be revisited.
+Therefore, for now we leave them undocumented:
+
+    gemmi::interpolate_grid()
+    gemmi::interpolate_grid_around_model()
+
+*Implementation note*
+
+Tricubic interpolation, as described on the
+`Wikipedia page <https://en.wikipedia.org/wiki/Tricubic_interpolation>`_ and in
+`Appendix B of a PHENIX paper <https://journals.iucr.org/d/issues/2018/06/00/ic5103/#APPB>`_,
+can be implemented either as 21 cubic interpolations or using a method
+introduced by `Lekien & Marsden <https://doi.org/10.1002/nme.1296>`_ in 2005,
+which involves 64x64 matrix of integral coefficients
+(see also this `blog post <http://ianfaust.com/2016/03/20/Tricubic/>`_).
+Gemmi uses the former method. It takes ~100 ns.
 
 .. _masked_grid:
 
@@ -466,13 +498,13 @@ The primary use for MaskedGrid is working with asymmetric unit (asu) only:
   >>> asu.mask_array  # doctest: +ELLIPSIS
   array([[[0, 0, 0, ..., 1, 1, 1],
          ...
-          [1, 0, 0, ..., 1, 1, 1]]], dtype=int8)
+          [1, 1, 1, ..., 1, 1, 1]]], dtype=int8)
   >>> sum(point.value for point in asu)
   7.125
   >>> for point in asu:
   ...   if point.value != 0: print(point)
   <gemmi.FloatGridBase.Point (0, 0, 0) -> 0.125>
-  <gemmi.FloatGridBase.Point (1, 1, 1) -> 7>
+  <gemmi.FloatGridBase.Point (1, 1, 1) -> 7.0>
 
 
 .. _solventmask:
@@ -518,7 +550,7 @@ The parameters of SolventMasker can be inspected and changed:
 .. doctest::
 
   >>> masker.atomic_radii_set
-  <AtomicRadiiSet.Cctbx: 1>
+  AtomicRadiiSet.Cctbx
   >>> masker.rprobe
   1.1
   >>> masker.rshrink
@@ -672,93 +704,110 @@ Here we print a few characteristics of the mask:
 MRC/CCP4 maps
 =============
 
-We support one file format for storing the grid data on disk: MRC/CCP4 map.
-The content of the map file is stored in a class that contains
-both the Grid class and all the meta-data from the CCP4 file header.
+We support one file format for storing grid data on disk: MRC/CCP4 map.
+(This format is known as *CCP4* in crystallography and *MRC* in cryoEM,
+here we'll refer to it as the CCP4 format.)
+The map file is represented as a class that contains
+the Grid class and a format header.
 
-The CCP4 format has a few different modes that correspond to different
-data types. Gemmi supports:
+The CCP4 format offers several *modes* for storing various data types.
+Gemmi supports:
 
-* mode 0 -- which corresponds to the C++ type int8_t,
-* mode 1 -- corresponds to int16_t,
-* mode 2 -- float,
-* and mode 6 -- uint16_t.
+* mode 0 -- which corresponds to the C++ type `int8_t`,
+* mode 1 -- corresponds to `int16_t`,
+* mode 2 -- `float`,
+* and mode 6 -- `uint16_t`.
 
-CCP4 programs use mode 2 (float) for the electron density, and
+CCP4 programs use mode 2 (float) for electron density and
 mode 0 (int8_t) for masks. A mask is 0/1 data that marks a part of the volume,
-such as the solvent region. Other modes are not used in crystallography,
+such as the solvent region. Other modes are not used in crystallography
 but may be used for CryoEM data.
 
-The CCP4 format is quite flexible. The data is stored as sections,
-rows and columns that correspond to a permutation of the X, Y and Z axes
-as defined in the file header.
-The file can contain only a part of the asymmetric unit
-or more than one asymmetric unit (i.e., redundant data).
-Typically, a span of the crystallographic map is one of the following:
+The CCP4 format is quite flexible. Data is stored as sections, rows,
+and columns that correspond to a permutation (defined in the file header)
+of the X, Y, Z axes. A file can cover any part of the unit cell
+or even multiple unit cells.
+Typically, a crystallographic map covers one of the following:
 
-* Covering a molecule with some margin around it.
-  This is necessary for programs such as PyMOL that don't know about symmetry.
-  CCP4 utilities `fft` + `mapmask` can make such a map.
-* Covering the asymmetric unit (asu). The program that reads
-  the map is supposed to expand the symmetry. This approach is used by
-  the CCP4 clipper library and by programs such as Coot.
+* A molecule with a margin around it.
+  This is necessary for programs that can't use symmetry (e.g., PyMOL).
+  Traditionally, such maps are created using the CCP4 utilities
+  `fft` + `mapmask`.
+* An asymmetric unit (asu). Programs reading such maps should expand
+  the symmetry. This approach was introduced in the CCP4 clipper library
+  and is used by programs such as Coot. For most space groups,
+  the map covers exactly one asu. However, for space groups where the asu
+  in fractional coordinates is non-rectangular, some redundancy is unavoidable.
 
-The latter approach generates map for exactly one asu, if possible.
-It is not possible if the shape of the asu in fractional coordinates
-is not rectangular, and in such case we must have some redundancy.
-On average, the maps generated for asu are significantly smaller,
-as compared in the
+On average, the latter maps are significantly smaller, as compared in the
 `UglyMol wiki <https://github.com/uglymol/uglymol/wiki/ccp4-dsn6-mtz>`_.
 
-Nowadays, the CCP4 format is rarely used in crystallography.
-Almost all programs read the reflection data and calculate maps on the fly.
-
-The MRC variant of the format contains the ORIGIN header records (words 50-52)
-that specify the location (in Angstroms) of a subvolume taken
-from a larger volume. Gemmi functions ignore this header because our focus
-was on crystallographic applications. Using it is up for discussion.
+Nowadays, the CCP4 format is less commonly used in crystallography,
+as nearly all programs calculate maps on the fly
+from map coefficients in reflection data (usually in MTZ format).
 
 Reading
 -------
 
-C++
-~~~
+A ccp4 map can be read with:
 
-To work with CCP4 maps you need::
+.. tab:: C++
 
-    #include <gemmi/ccp4.hpp>
+ ::
 
-The Ccp4 class is templated with the data type.
-Normally, we use float type for a map::
+  #include <gemmi/ccp4.hpp>
 
-    gemmi::Ccp4<float> map;
-    map.read_ccp4_map("my_map.ccp4");
+  Ccp4<float> map = read_ccp4_map(path, /*setup=*/false);
 
-and int8_t for a mask (mask typically has only values 0 and 1,
-but in principle the values can be from -127 to 128)::
+.. tab:: Python
 
-    gemmi::Ccp4<int8_t> mask;
-    mask.read_ccp4_map("my_mask.ccp4");
+ .. doctest::
 
-If the grid data type does not match the file data type, the library
-will attempt to convert the data when reading.
-
-Alternatively, you can use helper functions `read_ccp4_map()`
-and `read_ccp4_mask()` defined in `gemmi/read_map.hpp`.
-
-Python
-~~~~~~
-
-To read a ccp4 map:
-
-.. doctest::
-
-    >>> m = gemmi.read_ccp4_map('../tests/5i55_tiny.ccp4')
+    >>> m = gemmi.read_ccp4_map('../tests/5i55_tiny.ccp4', setup=False)
     >>> m
     <gemmi.Ccp4Map with grid 8x6x10 in SG #4>
 
-Similarly, to read a mask (ccp4 map in mode 0) call `read_ccp4_mask()`.
+The `setup` arg, if true, triggers additional setup that is usually performed
+after reading a map -- it will be described :ref:`later on <ccp4_setup>`.
 
+Similarly, a mask (mode 0 map) can be read with `read_ccp4_mask()`,
+which takes the same arguments as `read_ccp4_map()`
+and returns `Ccp4<int8_t>` in C++ and `Ccp4Mask` in Python.
+A mask typically contains only values 0 and 1,
+but in principle, values can range from -127 to 128.
+
+Gemmi loads all data into memory. Large tomography files may not fit
+into memory and would require a different approach, but our focus is
+on convenient working with files that can be kept in memory.
+Regardless of size, you can always read the format's header with:
+
+.. tab:: C++
+
+ ::
+
+  Ccp4Base map_header = read_ccp4_header(path);
+
+.. tab:: Python
+
+ .. doctest::
+
+    >>> gemmi.read_ccp4_header('../tests/5i55_tiny.ccp4')
+    <gemmi.Ccp4Base object at 0x...>
+
+You can read a file in any supported mode with `read_ccp4_map()`,
+but this converts file data to the 32-bit float type.
+In **C++**, `Ccp4<>` can be templated with any type,
+allowing native storage of data from modes 1 (`int16_t`) and 6 (`uint16_t`).
+The function `gemmi::read_ccp4_file(path, false)` can be replaced by::
+
+    gemmi::Ccp4<float> map;
+    map.read_ccp4_file(path);
+
+and instead of `float` you can use `int8_t`, `int16_t`, or `uint16_t`
+(in principle, it can be any type, but other types probably won't be useful).
+`Ccp4<T>` stores data in the `Grid<T> grid` member.
+When the grid type does not match the file data type, the library
+converts the data (`static_cast`) upon reading.
 
 Header
 ------
@@ -814,6 +863,7 @@ When the file is read, the header is used to set properties of the grid:
     >>> m.grid.unit_cell
     <gemmi.UnitCell(29.45, 10.5, 29.7, 90, 111.975, 90)>
 
+.. _ccp4_setup:
 
 setup()
 -------
@@ -881,7 +931,7 @@ Writing
 -------
 
 To write a map to a file, update the header if necessary,
-(optionally) set the extent of the map that is to be written,
+(optionally) set the extent of the map to be written,
 and call `write_ccp4_map()`.
 
 ::
@@ -900,12 +950,23 @@ update_ccp4_header() does the following:
 
 - if the map header is empty (a new map was created):
   it prepares the header,
-- if the optional argument `mode` is given and if it is different than
+- if the optional argument `mode` is given and differs from
   the current mode: the mode is changed and the data type will be
   converted while writing the file; the mode can be 0, 1, 2, 6, or
   -1 (default -- no action),
 - if the optional argument `update_stats` is true (the default is true):
   DMIN, DMAX, DMEAN and RMS in the map header are re-calculated.
+
+If the mode has not been changed (i.e. it matches the data type),
+`write_ccp4_map()` simply writes `ccp4_header` and grid data as they are.
+If instead of writing a map file you'd like to store it in a memory buffer,
+just copy the memory areas of the underlying C++ vectors.
+In Python, you can do:
+
+.. doctest::
+  :skipif: numpy is None
+
+    >>> map_bytes = m.ccp4_header + m.grid.array.tobytes(order='A')
 
 .. _set_extent:
 
@@ -989,7 +1050,9 @@ shows how to calculate such a map and write it to a file.
 Examples
 --------
 
-**Example 1.**
+mapslicer
+~~~~~~~~~
+
 A short code that draws a contour plot similar to mapslicer plots
 (see Fig. 3 in `this CCP4 paper <http://dx.doi.org/10.1107/S0907444902016116>`_
 if you wonder what is mapslicer).
@@ -1003,7 +1066,9 @@ To keep the example short we assume that the lattice vectors are orthogonal.
     :align: center
     :scale: 100
 
-**Example 2.**
+maskdiff
+~~~~~~~~
+
 A tiny utility that compares two masks (maps with 0/1 values)
 of the same size, printing a summary of matches and mismatches:
 
@@ -1023,3 +1088,24 @@ Here is the script:
    :language: python
    :lines: 3-
 
+Q-Q difference
+~~~~~~~~~~~~~~
+
+A script that generates a Q-Q difference plot, as described in the
+`2012 paper <https://journals.iucr.org/d/issues/2012/04/00/dz5235/index.html>`_
+by Ian Tickle, in section 5.2. This script aims to reproduce the QQDOUT output
+from `EDSTATS <https://www.ccp4.ac.uk/html/edstats.html>`_.
+
+As in the paper, we first downsample the data to have statistically
+independent points, and then we plot *Z*\ –⟨\ *Z*\ ⟩ on the *y* axis.
+To create a conventional Q-Q plot, with *Z* on the *y* axis,
+you can use `statsmodels.api.qqplot(map_values)`.
+
+.. literalinclude:: ../examples/qq-plot.py
+   :language: python
+   :lines: 3-
+
+To reproduce the plot from EDSTATS exactly,
+use EDSTATS's rescaled difference map (MAPOUT2) as the input,
+and call ProbPlot with `fit=False`.
+The density values in MAPOUT2 are normalized separately for each chain.

@@ -48,14 +48,14 @@ const option::Descriptor Usage[] = {
   { 0, 0, 0, 0, 0, 0 }
 };
 
-static char get_primary_altloc(const gemmi::Residue& res) {
+char get_primary_altloc(const gemmi::Residue& res) {
   for (const gemmi::Atom& atom : res.atoms)
     if (atom.altloc == '\0')
       return ' ';
   return res.atoms.at(0).altloc;
 }
 
-static bool check_if_atoms_are_unique(const gemmi::Residue& res) {
+bool check_if_atoms_are_unique(const gemmi::Residue& res) {
   // Unoptimized - O(N^2).
   for (const gemmi::Atom& atom : res.atoms)
     for (const gemmi::Atom* a = res.atoms.data(); a < &atom; ++a)
@@ -64,12 +64,12 @@ static bool check_if_atoms_are_unique(const gemmi::Residue& res) {
   return true;
 }
 
-static bool check_sequence_id(const gemmi::Structure& st) {
+bool check_sequence_id(const gemmi::Structure& st) {
   bool error = false;
   std::string model_num;
   for (const gemmi::Model& model : st.models) {
     if (st.models.size() > 1)
-      model_num = " (model " + model.name + ")";
+      model_num = gemmi::cat(" (model ", model.num + ')');
     for (const gemmi::Chain& chain : model.chains) {
       const gemmi::Residue* prev_res = nullptr;
       for (const gemmi::Residue& res : chain.residues) {
@@ -355,7 +355,7 @@ int GEMMI_MAIN(int argc, char **argv) {
         st.merge_chain_parts();
       for (gemmi::Model& model : st.models) {
         if (st.models.size() != 1)
-          printf("Model %s\n", model.name.c_str());
+          printf("Model %d\n", model.num);
         if (p.options[Chains])
           print_chain_info(model);
         else if (p.options[Short])

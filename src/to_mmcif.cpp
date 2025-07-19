@@ -12,6 +12,7 @@
 #include <gemmi/sprintf.hpp>
 #include <gemmi/enumstr.hpp>    // for entity_type_to_string, ...
 #include <gemmi/seqtools.hpp>   // for pdbx_one_letter_code, ...
+#include <gemmi/to_pdb.hpp>     // for use_hetatm
 
 namespace gemmi {
 
@@ -109,11 +110,12 @@ void add_cif_atoms(const Structure& st, cif::Block& block,
 
   std::vector<std::string>& vv = atom_loop.values;
   vv.reserve(atom_site_count * atom_loop.tags.size());
-  std::vector<std::pair<int, const Atom*>> aniso;
+  std::vector<std::tuple<int, int, const Atom*>> aniso;
   int serial = 0;
   for (const Model& model : st.models) {
     for (const Chain& chain : model.chains) {
       for (const Residue& res : chain.residues) {
+        bool as_het = use_hetatm(res);
         std::string label_seq_id = res.label_seq.str('.');
         std::string auth_seq_id = res.seqid.num.str();
         std::string entity_id;
@@ -123,7 +125,7 @@ void add_cif_atoms(const Structure& st, cif::Block& block,
           entity_id = string_or_dot(res.entity_id);
         for (const Atom& atom : res.atoms) {
           if (use_group_pdb)
-            vv.emplace_back(res.het_flag != 'H' ? "ATOM" : "HETATM");
+            vv.emplace_back(as_het ? "HETATM" : "ATOM");
           vv.emplace_back(std::to_string(++serial));
           vv.emplace_back(atom.element.uname());
           vv.emplace_back(cif::quote(atom.name));
@@ -146,7 +148,7 @@ void add_cif_atoms(const Structure& st, cif::Block& block,
           }
           vv.emplace_back(auth_seq_id);
           vv.emplace_back(qchain(chain.name));
-          vv.emplace_back(string_or_qmark(model.name));
+          vv.emplace_back(std::to_string(model.num));
           if (has_calc_flag)
             vv.emplace_back(&".\0.\0d\0c\0dum"[2 * (int) atom.calc_flag]);
           if (has_tls_group_id)
@@ -154,7 +156,7 @@ void add_cif_atoms(const Structure& st, cif::Block& block,
           if (st.has_d_fraction)
             vv.emplace_back(to_str(atom.fraction));
           if (atom.aniso.nonzero())
-            aniso.emplace_back(serial, &atom);
+            aniso.emplace_back(serial, model.num, &atom);
         }
       }
     }
@@ -165,17 +167,22 @@ void add_cif_atoms(const Structure& st, cif::Block& block,
     cif::Loop& aniso_loop = block.init_mmcif_loop("_atom_site_anisotrop.", {
                                   "id", "type_symbol", "U[1][1]", "U[2][2]",
                                   "U[3][3]", "U[1][2]", "U[1][3]", "U[2][3]"});
+    if (st.models.size() > 1)
+      aniso_loop.tags.push_back("_atom_site_anisotrop.pdbx_PDB_model_num");
     std::vector<std::string>& aniso_val = aniso_loop.values;
     aniso_val.reserve(aniso_loop.tags.size() * aniso.size());
     for (const auto& a : aniso) {
-      aniso_val.emplace_back(std::to_string(a.first));
-      aniso_val.emplace_back(a.second->element.uname());
-      aniso_val.emplace_back(to_str(a.second->aniso.u11));
-      aniso_val.emplace_back(to_str(a.second->aniso.u22));
-      aniso_val.emplace_back(to_str(a.second->aniso.u33));
-      aniso_val.emplace_back(to_str(a.second->aniso.u12));
-      aniso_val.emplace_back(to_str(a.second->aniso.u13));
-      aniso_val.emplace_back(to_str(a.second->aniso.u23));
+      aniso_val.emplace_back(std::to_string(std::get<0>(a)));
+      const Atom* atom = std::get<2>(a);
+      aniso_val.emplace_back(atom->element.uname());
+      aniso_val.emplace_back(to_str(atom->aniso.u11));
+      aniso_val.emplace_back(to_str(atom->aniso.u22));
+      aniso_val.emplace_back(to_str(atom->aniso.u33));
+      aniso_val.emplace_back(to_str(atom->aniso.u12));
+      aniso_val.emplace_back(to_str(atom->aniso.u13));
+      aniso_val.emplace_back(to_str(atom->aniso.u23));
+      if (st.models.size() > 1)
+        aniso_loop.values.push_back(std::to_string(std::get<1>(a)));
     }
   }
 }
@@ -300,6 +307,20 @@ bool is_valid_block_name(const std::string& name) {
          std::all_of(name.begin(), name.end(), [](char c){ return c >= '!' && c <= '~'; });
 }
 
+int get_number_obs(const BasicRefinementInfo& ref) {
+  int nobs = ref.reflection_count;
+  if (nobs == -1 && ref.rfree_set_count >= 0 && ref.work_set_count >= 0)
+    nobs = ref.work_set_count + ref.rfree_set_count;
+  return nobs;
+}
+
+int get_number_work(const BasicRefinementInfo& ref) {
+  int nwork = ref.work_set_count;
+  if (nwork == -1 && ref.rfree_set_count >= 0 && ref.reflection_count >= 0)
+    nwork = ref.reflection_count - ref.rfree_set_count;
+  return nwork;
+}
+
 } // anonymous namespace
 
 void write_ncs_oper(const Structure& st, cif::Block& block) {
@@ -395,19 +416,12 @@ void write_struct_conn(const Structure& st, cif::Block& block) {
 }
 
 void write_cispeps(const Structure& st, cif::Block& block) {
-  cif::Loop& prot_cis_loop = block.init_mmcif_loop("_struct_mon_prot_cis.",
-      {"pdbx_id", "pdbx_PDB_model_num",
-       "label_asym_id", "label_seq_id", "label_comp_id",
-       "auth_asym_id", "auth_seq_id", "pdbx_PDB_ins_code",
-       "pdbx_label_asym_id_2", "pdbx_label_seq_id_2", "pdbx_label_comp_id_2",
-       "pdbx_auth_asym_id_2", "pdbx_auth_seq_id_2", "pdbx_PDB_ins_code_2",
-       "label_alt_id", "pdbx_omega_angle"});
-  auto& v = prot_cis_loop.values;
+  cif::Loop* prot_cis_loop = nullptr;
   int pdbx_id = 0;
   for (const CisPep& cispep : st.cispeps) {
     const Model* model = &st.models[0];
     if (st.models.size() > 1) {
-      model = st.find_model(cispep.model_str);
+      model = st.find_model(cispep.model_num);
       if (!model)
         continue;
     }
@@ -415,8 +429,17 @@ void write_cispeps(const Structure& st, cif::Block& block) {
     const_CRA cra2 = model->find_cra(cispep.partner_n, true);
     if (!cra1.residue || !cra2.residue)
       continue;
+    if (!prot_cis_loop)
+      prot_cis_loop = &block.init_mmcif_loop("_struct_mon_prot_cis.",
+          {"pdbx_id", "pdbx_PDB_model_num",
+           "label_asym_id", "label_seq_id", "label_comp_id",
+           "auth_asym_id", "auth_seq_id", "pdbx_PDB_ins_code",
+           "pdbx_label_asym_id_2", "pdbx_label_seq_id_2", "pdbx_label_comp_id_2",
+           "pdbx_auth_asym_id_2", "pdbx_auth_seq_id_2", "pdbx_PDB_ins_code_2",
+           "label_alt_id", "pdbx_omega_angle"});
+    auto& v = prot_cis_loop->values;
     v.emplace_back(std::to_string(++pdbx_id));            // pdbx_id
-    v.emplace_back(cispep.model_str);                     // pdbx_PDB_model_num
+    v.emplace_back(std::to_string(model->num));           // pdbx_PDB_model_num
     v.emplace_back(subchain_or_dot(*cra1.residue));       // label_asym_id
     v.emplace_back(cra1.residue->label_seq.str('.'));     // label_seq_id
     v.emplace_back(cra1.residue->name);                   // label_comp_id
@@ -528,8 +551,8 @@ void update_mmcif_block(const Structure& st, cif::Block& block, MmcifOutputGroup
                                   {"id", "entity_id", "db_name", "db_code",
                                    "pdbx_db_accession", "pdbx_db_isoform"});
     cif::Loop& seq_loop = block.init_mmcif_loop("_struct_ref_seq.", {
-        "align_id", "ref_id", "pdbx_strand_id",
-        "seq_align_beg", "seq_align_end",
+        "align_id", "ref_id", "pdbx_strand_id", "pdbx_PDB_id_code",
+        "seq_align_beg", "seq_align_end", "pdbx_db_accession",
         "db_align_beg", "db_align_end",
         "pdbx_auth_seq_align_beg", "pdbx_seq_align_beg_ins_code",
         "pdbx_auth_seq_align_end", "pdbx_seq_align_end_ins_code"});
@@ -558,17 +581,28 @@ void update_mmcif_block(const Structure& st, cif::Block& block, MmcifOutputGroup
               label_end = span.auth_seq_id_to_label(dbref.seq_end);
             } catch (const std::out_of_range&) {}
           }
+          SeqId begin = dbref.seq_begin;
+          SeqId end = dbref.seq_end;
+          if (!begin.num || !end.num) {
+            if (const Chain* chain = st.models[0].find_chain(strand_id->second))
+              if (ConstResidueGroup polymer = chain->get_polymer()) {
+                begin = polymer.label_seq_id_to_auth(dbref.label_seq_begin);
+                end = polymer.label_seq_id_to_auth(dbref.label_seq_end);
+              }
+          }
           seq_loop.add_row({std::to_string(++counter2),
                             std::to_string(counter),
                             strand_id->second,  // pdbx_strand_id
+                            id,
                             label_begin.str(),
                             label_end.str(),
+                            string_or_qmark(dbref.accession_code),
                             dbref.db_begin.num.str(),
                             dbref.db_end.num.str(),
-                            dbref.seq_begin.num.str(),
-                            pdbx_icode(dbref.seq_begin),
-                            dbref.seq_end.num.str(),
-                            pdbx_icode(dbref.seq_end)});
+                            begin.num.str(),
+                            pdbx_icode(begin),
+                            end.num.str(),
+                            pdbx_icode(end)});
         }
       }
   }
@@ -717,30 +751,34 @@ void update_mmcif_block(const Structure& st, cif::Block& block, MmcifOutputGroup
                     number_or_qmark(exper.reflections.mean_I_over_sigma),
                     /*number_or_qmark(exper.b_wilson)*/});
     // _reflns_shell
-    cif::Loop& shell_loop = block.init_mmcif_loop("_reflns_shell.", {
-        "pdbx_ordinal",
-        "pdbx_diffrn_id",
-        "d_res_high",
-        "d_res_low",
-        "percent_possible_all",
-        "pdbx_redundancy",
-        "Rmerge_I_obs",
-        "pdbx_Rsym_value",
-        "meanI_over_sigI_obs"});
+    cif::Loop* shell_loop = nullptr;
     n = 0;
     for (const ExperimentInfo& exper : st.meta.experiments) {
       std::string diffrn_id =
         string_or_dot(join_str(exper.diffraction_ids, ","));
-      for (const ReflectionsInfo& shell : exper.shells)
-        shell_loop.add_row({std::to_string(++n),
-                            diffrn_id,
-                            number_or_qmark(shell.resolution_high),
-                            number_or_qmark(shell.resolution_low),
-                            number_or_qmark(shell.completeness),
-                            number_or_qmark(shell.redundancy),
-                            number_or_qmark(shell.r_merge),
-                            number_or_qmark(shell.r_sym),
-                            number_or_qmark(shell.mean_I_over_sigma)});
+      for (const ReflectionsInfo& shell : exper.shells) {
+        if (!shell_loop)
+          shell_loop = &block.init_mmcif_loop("_reflns_shell.", {
+              "pdbx_ordinal",
+              "pdbx_diffrn_id",
+              "d_res_high",
+              "d_res_low",
+              "percent_possible_all",
+              "pdbx_redundancy",
+              "Rmerge_I_obs",
+              "pdbx_Rsym_value",
+              "meanI_over_sigI_obs"});
+
+        shell_loop->add_row({std::to_string(++n),
+                             diffrn_id,
+                             number_or_qmark(shell.resolution_high),
+                             number_or_qmark(shell.resolution_low),
+                             number_or_qmark(shell.completeness),
+                             number_or_qmark(shell.redundancy),
+                             number_or_qmark(shell.r_merge),
+                             number_or_qmark(shell.r_sym),
+                             number_or_qmark(shell.mean_I_over_sigma)});
+      }
     }
   }
 
@@ -752,7 +790,8 @@ void update_mmcif_block(const Structure& st, cif::Block& block, MmcifOutputGroup
         "ls_d_res_high",
         "ls_d_res_low",
         "ls_percent_reflns_obs",
-        "ls_number_reflns_obs"});
+        "ls_number_reflns_obs",
+        "ls_number_reflns_R_work"});
     cif::Loop& analyze_loop = block.init_mmcif_loop("_refine_analyze.", {
         "entry_id",
         "pdbx_refine_id",
@@ -760,24 +799,53 @@ void update_mmcif_block(const Structure& st, cif::Block& block, MmcifOutputGroup
     cif::Loop& restr_loop = block.init_mmcif_loop("_refine_ls_restr.", {
         "pdbx_refine_id", "type",
         "number", "weight", "pdbx_restraint_function", "dev_ideal"});
-    cif::Loop& shell_loop = block.init_mmcif_loop("_refine_ls_shell.", {
+    // _refine_ls_shell
+    std::vector<std::string> shell_tags = {
         "pdbx_refine_id",
         "d_res_high",
         "d_res_low",
         "percent_reflns_obs",
         "number_reflns_obs",
+        "number_reflns_R_work",
         "number_reflns_R_free",
         "R_factor_obs",
         "R_factor_R_work",
-        "R_factor_R_free"});
+        "R_factor_R_free"};
+    bool has_shell_fsc = false;
+    bool has_shell_ffcc = false;
+    bool has_shell_iicc = false;
+    for (const RefinementInfo& ref : st.meta.refinement)
+      for (const BasicRefinementInfo& bin : ref.bins) {
+        if (!std::isnan(bin.fsc_work) || !std::isnan(bin.fsc_free))
+          has_shell_fsc = true;
+        if (!std::isnan(bin.cc_fo_fc_work) || !std::isnan(bin.cc_fo_fc_free))
+          has_shell_ffcc = true;
+        if (!std::isnan(bin.cc_intensity_work) || !std::isnan(bin.cc_intensity_free))
+          has_shell_iicc = true;
+      }
+    if (has_shell_fsc) {
+      shell_tags.push_back("pdbx_fsc_work");
+      shell_tags.push_back("pdbx_fsc_free");
+    }
+    if (has_shell_ffcc) {
+      shell_tags.push_back("correlation_coeff_Fo_to_Fc");
+      shell_tags.push_back("correlation_coeff_Fo_to_Fc_free");
+    }
+    if (has_shell_iicc) {
+      shell_tags.push_back("correlation_coeff_I_to_Fcsqd_work");
+      shell_tags.push_back("correlation_coeff_I_to_Fcsqd_free");
+    }
+    cif::Loop& shell_loop = block.init_mmcif_loop("_refine_ls_shell.", shell_tags);
+
     for (size_t i = 0; i != st.meta.refinement.size(); ++i) {
       const RefinementInfo& ref = st.meta.refinement[i];
-      loop.values.push_back(id);
-      loop.values.push_back(cif::quote(ref.id));
-      loop.values.push_back(number_or_dot(ref.resolution_high));
-      loop.values.push_back(number_or_dot(ref.resolution_low));
-      loop.values.push_back(number_or_dot(ref.completeness));
-      loop.values.push_back(int_or_dot(ref.reflection_count));
+      loop.add_values({id,
+                       cif::quote(ref.id),
+                       number_or_dot(ref.resolution_high),
+                       number_or_dot(ref.resolution_low),
+                       number_or_dot(ref.completeness),
+                       int_or_dot(get_number_obs(ref)),
+                       int_or_qmark(get_number_work(ref))});
       auto add = [&](const std::string& tag, const std::string& val) {
         if (i == 0)
           loop.tags.push_back("_refine." + tag);
@@ -801,11 +869,9 @@ void update_mmcif_block(const Structure& st, cif::Block& block, MmcifOutputGroup
         add("B_iso_mean", number_or_qmark(ref.mean_b));
       if (st.meta.has(&RefinementInfo::aniso_b)) {
         if (i == 0)
-          for (const char* index : {"[1][1]", "[2][2]", "[3][3]",
-                                    "[1][2]", "[1][3]", "[2][3]"})
+          for (const char* index : {"[1][1]", "[2][2]", "[3][3]", "[1][2]", "[1][3]", "[2][3]"})
             loop.tags.push_back(std::string("_refine.aniso_B") + index);
-        const Mat33& t = ref.aniso_b;
-        for (double d : {t[0][0], t[1][1], t[2][2], t[0][1], t[0][2], t[1][2]})
+        for (double d : ref.aniso_b.elements_pdb())
           loop.values.push_back(number_or_qmark(d));
       }
       if (st.meta.has(&RefinementInfo::dpi_blow_r))
@@ -820,11 +886,19 @@ void update_mmcif_block(const Structure& st, cif::Block& block, MmcifOutputGroup
       if (st.meta.has(&RefinementInfo::dpi_cruickshank_rfree))
         add("pdbx_overall_SU_R_free_Cruickshank_DPI",
             number_or_qmark(ref.dpi_cruickshank_rfree));
-      if (st.meta.has(&RefinementInfo::cc_fo_fc))
-        add("correlation_coeff_Fo_to_Fc", number_or_qmark(ref.cc_fo_fc));
+      if (st.meta.has(&RefinementInfo::cc_fo_fc_work))
+        add("correlation_coeff_Fo_to_Fc", number_or_qmark(ref.cc_fo_fc_work));
       if (st.meta.has(&RefinementInfo::cc_fo_fc_free))
         add("correlation_coeff_Fo_to_Fc_free",
             number_or_qmark(ref.cc_fo_fc_free));
+      if (st.meta.has(&RefinementInfo::fsc_work))
+        add("pdbx_average_fsc_work", number_or_qmark(ref.fsc_work));
+      if (st.meta.has(&RefinementInfo::fsc_free))
+        add("pdbx_average_fsc_free", number_or_qmark(ref.fsc_free));
+      if (st.meta.has(&RefinementInfo::cc_intensity_work))
+        add("correlation_coeff_I_to_Fcsqd_work", number_or_qmark(ref.cc_intensity_work));
+      if (st.meta.has(&RefinementInfo::cc_intensity_free))
+        add("correlation_coeff_I_to_Fcsqd_free", number_or_qmark(ref.cc_intensity_free));
       if (!st.meta.solved_by.empty())
         add("pdbx_method_to_determine_struct", string_or_qmark(st.meta.solved_by));
       if (!st.meta.starting_model.empty())
@@ -840,17 +914,29 @@ void update_mmcif_block(const Structure& st, cif::Block& block, MmcifOutputGroup
                             number_or_qmark(restr.weight),
                             string_or_qmark(restr.function),
                             number_or_qmark(restr.dev_ideal)});
-      for (const BasicRefinementInfo& bin : ref.bins)
-        shell_loop.add_row({cif::quote(ref.id),
-                            number_or_dot(bin.resolution_high),
-                            number_or_qmark(bin.resolution_low),
-                            number_or_qmark(bin.completeness),
-                            int_or_qmark(bin.reflection_count),
-                            int_or_qmark(bin.rfree_set_count),
-                            number_or_qmark(bin.r_all),
-                            number_or_qmark(bin.r_work),
-                            number_or_qmark(bin.r_free)});
+      for (const BasicRefinementInfo& bin : ref.bins) {
+        shell_loop.add_values({cif::quote(ref.id),
+                               number_or_dot(bin.resolution_high),
+                               number_or_qmark(bin.resolution_low),
+                               number_or_qmark(bin.completeness),
+                               int_or_qmark(get_number_obs(bin)),
+                               int_or_qmark(get_number_work(bin)),
+                               int_or_qmark(bin.rfree_set_count),
+                               number_or_qmark(bin.r_all),
+                               number_or_qmark(bin.r_work),
+                               number_or_qmark(bin.r_free)});
+        if (has_shell_fsc)
+          shell_loop.add_values({number_or_qmark(bin.fsc_work),
+                                 number_or_qmark(bin.fsc_free)});
+        if (has_shell_ffcc)
+          shell_loop.add_values({number_or_qmark(bin.cc_fo_fc_work),
+                                 number_or_qmark(bin.cc_fo_fc_free)});
+        if (has_shell_iicc)
+          shell_loop.add_values({number_or_qmark(bin.cc_intensity_work),
+                                 number_or_qmark(bin.cc_intensity_free)});
+      }
     }
+    assert(shell_loop.values.size() % shell_loop.tags.size() == 0);
     assert(loop.values.size() % loop.tags.size() == 0);
   }
 
@@ -1060,17 +1146,16 @@ void update_mmcif_block(const Structure& st, cif::Block& block, MmcifOutputGroup
       loop.tags.push_back("_pdbx_struct_mod_residue.ccp4_mod_id");
     int counter = 0;
     for (const ModRes& modres : st.mod_residues) {
-      auto& v = loop.values;
-      v.push_back(std::to_string(++counter));
-      v.push_back(qchain(modres.chain_name));
-      v.push_back(modres.res_id.seqid.num.str());
-      v.push_back(pdbx_icode(modres.res_id));
-      v.push_back(string_or_dot(modres.res_id.name));
-      v.push_back(string_or_qmark(modres.res_id.name));
-      v.push_back(string_or_qmark(modres.parent_comp_id));
-      v.push_back(string_or_qmark(modres.details));
+      loop.add_values({std::to_string(++counter),
+                       qchain(modres.chain_name),
+                       modres.res_id.seqid.num.str(),
+                       pdbx_icode(modres.res_id),
+                       string_or_dot(modres.res_id.name),
+                       string_or_qmark(modres.res_id.name),
+                       string_or_qmark(modres.parent_comp_id),
+                       string_or_qmark(modres.details)});
       if (use_ccp4_mod_id)
-        v.push_back(string_or_qmark(modres.mod_id));
+        loop.values.push_back(string_or_qmark(modres.mod_id));
     }
   }
 
@@ -1087,7 +1172,7 @@ void update_mmcif_block(const Structure& st, cif::Block& block, MmcifOutputGroup
       span.set_pair(matrix_idx + "[1]", to_str(frac.mat[i][0]));
       span.set_pair(matrix_idx + "[2]", to_str(frac.mat[i][1]));
       span.set_pair(matrix_idx + "[3]", to_str(frac.mat[i][2]));
-      span.set_pair(prefix + "vector" + idx, to_str(frac.vec.at(i)));
+      span.set_pair(cat(prefix, "vector", idx), to_str(frac.vec.at(i)));
     }
   }
 
@@ -1130,59 +1215,79 @@ void update_mmcif_block(const Structure& st, cif::Block& block, MmcifOutputGroup
   if (groups.atoms)
     add_cif_atoms(st, block, groups.group_pdb, groups.auth_all);
 
-  if (groups.tls && st.meta.has_tls()) {
+  if (groups.tls && st.meta.get_tls_groups() != nullptr) {
+    // pdbx_refine_id doesn't make sense here, but it's required
+    // by the mmCIF spec. In joint refinement, TLS constraints can't be
+    // specific to a dataset, because they constrain the shared model.
     cif::Loop& loop = block.init_mmcif_loop("_pdbx_refine_tls.", {
-        "pdbx_refine_id", "id",
+        "id", "pdbx_refine_id",
+        "origin_x", "origin_y", "origin_z",
         "T[1][1]", "T[2][2]", "T[3][3]", "T[1][2]", "T[1][3]", "T[2][3]",
         "L[1][1]", "L[2][2]", "L[3][3]", "L[1][2]", "L[1][3]", "L[2][3]",
         "S[1][1]", "S[1][2]", "S[1][3]",
         "S[2][1]", "S[2][2]", "S[2][3]",
-        "S[3][1]", "S[3][2]", "S[3][3]",
-        "origin_x", "origin_y", "origin_z"});
+        "S[3][1]", "S[3][2]", "S[3][3]"});
     for (const RefinementInfo& ref : st.meta.refinement)
       for (const TlsGroup& tls : ref.tls_groups) {
-        const Mat33& T = tls.T;
-        const Mat33& L = tls.L;
+        const SMat33<double>& T = tls.T;
+        const SMat33<double>& L = tls.L;
         const Mat33& S = tls.S;
         auto q = number_or_qmark;
-        loop.add_row({cif::quote(ref.id), string_or_dot(tls.id),
-                      q(T[0][0]), q(T[1][1]), q(T[2][2]),
-                      q(T[0][1]), q(T[0][2]), q(T[1][2]),
-                      q(L[0][0]), q(L[1][1]), q(L[2][2]),
-                      q(L[0][1]), q(L[0][2]), q(L[1][2]),
+        loop.add_row({string_or_dot(tls.id), cif::quote(ref.id),
+                      q(tls.origin.x), q(tls.origin.y), q(tls.origin.z),
+                      q(T.u11), q(T.u22), q(T.u33), q(T.u12), q(T.u13), q(T.u23),
+                      q(L.u11), q(L.u22), q(L.u33), q(L.u12), q(L.u13), q(L.u23),
                       q(S[0][0]), q(S[0][1]), q(S[0][2]),
                       q(S[1][0]), q(S[1][1]), q(S[1][2]),
-                      q(S[2][0]), q(S[2][1]), q(S[2][2]),
-                      q(tls.origin.x), q(tls.origin.y), q(tls.origin.z)});
+                      q(S[2][0]), q(S[2][1]), q(S[2][2])});
       }
     cif::Loop& group_loop = block.init_mmcif_loop("_pdbx_refine_tls_group.", {
-        "id", "refine_tls_id", "beg_auth_asym_id", "beg_auth_seq_id",
-        "end_auth_asym_id", "end_auth_seq_id", "selection_details"});
+        "id", "refine_tls_id", "pdbx_refine_id",
+        "beg_auth_asym_id", "beg_auth_seq_id", "beg_PDB_ins_code",
+        "end_auth_asym_id", "end_auth_seq_id", "end_PDB_ins_code",
+        "selection_details"});
     int counter = 1;
     for (const RefinementInfo& ref : st.meta.refinement)
       for (const TlsGroup& tls : ref.tls_groups)
         for (const TlsGroup::Selection& sel : tls.selections)
           group_loop.add_row({std::to_string(counter++),
                               string_or_dot(tls.id),
+                              cif::quote(ref.id),
                               string_or_qmark(sel.chain),
-                              sel.res_begin.num ? sel.res_begin.str() : "?",
+                              sel.res_begin.num.str(),
+                              pdbx_icode(sel.res_begin),
                               string_or_qmark(sel.chain),
-                              sel.res_end.num ? sel.res_end.str() : "?",
+                              sel.res_end.num.str(),
+                              pdbx_icode(sel.res_end),
                               string_or_qmark(sel.details)});
   }
 
   if (groups.software && !st.meta.software.empty()) {
-    cif::Loop& loop = block.init_mmcif_loop("_software.",
-        {"pdbx_ordinal", "classification", "name", "version", "date", "description"});
-    int ordinal = 0;
+    bool write_all_fields = false;
     for (const SoftwareItem& item : st.meta.software)
-      loop.add_row({
+      if (!item.date.empty() || !item.description.empty() ||
+          !item.contact_author.empty() || !item.contact_author_email.empty())
+        write_all_fields = true;
+    cif::Loop& loop = block.init_mmcif_loop("_software.",
+        {"pdbx_ordinal", "classification", "name", "version"});
+    if (write_all_fields)
+      loop.tags.insert(loop.tags.end(),
+                       {"_software.date", "_software.description",
+                        "_software.contact_author", "_software.contact_author_email"});
+    int ordinal = 0;
+    for (const SoftwareItem& item : st.meta.software) {
+      loop.add_values({
           std::to_string(++ordinal),
           cif::quote(software_classification_to_string(item.classification)),
           cif::quote(item.name),
-          string_or_dot(item.version),
-          string_or_qmark(item.date),
-          string_or_qmark(item.description)});
+          string_or_dot(item.version)});
+      if (write_all_fields)
+        loop.add_values({
+            string_or_qmark(item.date),
+            string_or_qmark(item.description),
+            string_or_qmark(item.contact_author),
+            string_or_qmark(item.contact_author_email)});
+    }
   }
 }
 

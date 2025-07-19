@@ -146,11 +146,11 @@ void process_match(const Input& in, GrepParams& par, int n) {
       else
         par.multi_match_columns[n] = -1;
       return;
-    } else if (par.delim.empty()) {
-      printf("[%s] ", tag.c_str());
-    } else {
-      printf("%s%s", tag.c_str(), sep);
     }
+    if (par.delim.empty())
+      printf("[%s] ", tag.c_str());
+    else
+      printf("%s%s", tag.c_str(), sep);
   }
   std::string value = par.raw ? in.string() : cif::as_string(in.string());
   printf("%s\n", value.c_str());
@@ -459,7 +459,7 @@ void grep_file(const std::string& path, GrepParams& par, int& err_count) {
       run_parse(in, par);
     }
   } catch (bool) {
-    // ok, "throw true" is used as goto
+    // ok, "throw true" is used as goto in this file
   } catch (std::runtime_error& e) {
     std::fflush(stdout);
     fprintf(stderr, "Error when parsing %s:\n\t%s\n", path.c_str(), e.what());
@@ -523,7 +523,6 @@ int GEMMI_MAIN(int argc, char **argv) {
     gemmi::replace_all(params.delim, "\\t", "\t");
   }
 
-  auto paths = p.paths_from_args_or_file(FromFile, 1);
   const char* tag = p.nonOption(0);
   if (tag[0] != '_' && !p.options[ExtRegexp]) {
     fprintf(stderr, "CIF tag must start with \"_\": %s\n", tag);
@@ -555,6 +554,7 @@ int GEMMI_MAIN(int argc, char **argv) {
   size_t file_count = 0;
   int err_count = 0;
   try {
+    auto paths = p.paths_from_args_or_file(FromFile, 1);
     char expand_type = p.options[PdbDirSf] ? 'S' : 'M';
     for (const std::string& path : paths) {
       if (path == "-") {

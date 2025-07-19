@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # IF YOU ADD OR REMOVE LINES, ADJUST :lines: in docs/hkl.rst
 
-import numpy
 import pandas
 from matplotlib import pyplot
 import gemmi
@@ -11,8 +10,7 @@ SFCIF_PATH = 'tests/r5wkdsf.ent'
 
 # make DataFrame from MTZ file
 mtz = gemmi.read_mtz_file(MTZ_PATH)
-mtz_data = numpy.array(mtz, copy=False)
-mtz_df = pandas.DataFrame(data=mtz_data, columns=mtz.column_labels())
+mtz_df = pandas.DataFrame(data=mtz.array, columns=mtz.column_labels())
 # (optional) store Miller indices as integers
 mtz_df = mtz_df.astype({label: 'int32' for label in 'HKL'})
 

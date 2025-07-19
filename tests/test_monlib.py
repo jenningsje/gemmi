@@ -15,7 +15,7 @@ HETATM    4  O3  SO3     1      -5.199  -0.407  16.748  1.00 20.00           O1-
 def full_path(filename):
     return os.path.join(os.path.dirname(__file__), filename)
 
-# tests for gemmi/chemcomp_xyz.hpp
+# tests for make_structure_from_chemcomp_block()
 class TestChemCompXyz(unittest.TestCase):
     def test_reading_monomer_SO3_coordinates(self):
         path = full_path('SO3.cif')
@@ -28,10 +28,18 @@ class TestChemCompXyz(unittest.TestCase):
     def test_reading_HEM(self):
         cif_path = full_path('HEM.cif')
         cif_block = gemmi.cif.read(cif_path).sole_block()
+
         cif_st = gemmi.make_structure_from_chemcomp_block(cif_block)
-        self.assertEqual(len(cif_st), 2)
-        # we compare not-ideal model only
-        del cif_st['example_xyz']
+        self.assertEqual(len(cif_st), 2)  # two models: Ideal and Example
+
+        which = gemmi.ChemCompModel.Xyz
+        cif_st = gemmi.make_structure_from_chemcomp_block(cif_block, which)
+        self.assertEqual(len(cif_st), 0)
+
+        which = gemmi.ChemCompModel.Xyz | gemmi.ChemCompModel.Ideal
+        cif_st = gemmi.make_structure_from_chemcomp_block(cif_block, which)
+        self.assertEqual(len(cif_st), 1)
+
         # PDBe files have residue number 0 and ATOM instead of HETATM
         residue = cif_st[0][0][0]
         residue.seqid.num = 0

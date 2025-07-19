@@ -50,6 +50,11 @@ inline double angle_abs_diff(double a, double b, double full=360.0) {
   return std::min(d, full - d);
 }
 
+// similar to C++17 std::clamp()
+template<class T> constexpr T clamp(T v, T lo, T hi) {
+  return std::min(std::max(v, lo), hi);
+}
+
 template <typename Real>
 struct Vec3_ {
   Real x, y, z;
@@ -93,7 +98,7 @@ struct Vec3_ {
     return dot(o) / std::sqrt(length_sq() * o.length_sq());
   }
   Real angle(const Vec3_& o) const {
-    return std::acos(std::max(-1., std::min(1., cos_angle(o))));
+    return std::acos(clamp(cos_angle(o), -1., 1.));
   }
   bool approx(const Vec3_& o, Real epsilon) const {
     return std::fabs(x - o.x) <= epsilon &&
@@ -244,7 +249,7 @@ struct UpperTriangularMat33 {
   double          a22 = 0, a23 = 0;
   double                   a33 = 0;
   UpperTriangularMat33() = default;
-  void operator=(const Mat33& m) {
+  UpperTriangularMat33& operator=(const Mat33& m) {
     if (m.is_upper_triangular()) {
       a11 = m[0][0];
       a12 = m[0][1];
@@ -255,6 +260,7 @@ struct UpperTriangularMat33 {
     } else {
       a11 = a12 = a13 = a22 = a23 = a33 = NAN;
     }
+    return *this;
   }
   Vec3 multiply(const Vec3& p) const {
     return {a11 * p.x + a12 * p.y + a13 * p.z,
@@ -274,6 +280,12 @@ template<typename T> struct SMat33 {
 
   Mat33 as_mat33() const {
     return Mat33(u11, u12, u13, u12, u22, u23, u13, u23, u33);
+  }
+
+  // the arguments i and j must be in [0,2], i.e. 0, 1 or 2.
+  T& unchecked_ref(int i, int j) {
+    T* ptrs[9] = {&u11, &u12, &u13, &u12, &u22, &u23, &u13, &u23, &u33};
+    return *ptrs[3 * i + j];
   }
 
   T trace() const { return u11 + u22 + u33; }

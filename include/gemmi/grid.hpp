@@ -9,7 +9,6 @@
 #include <cstddef>    // for ptrdiff_t
 #include <complex>
 #include <algorithm>  // for fill
-#include <memory>     // for unique_ptr
 #include <numeric>    // for accumulate
 #include <type_traits>
 #include <vector>
@@ -210,6 +209,9 @@ struct GridMeta {
   /// Quick(est) index function, but works only if `0 <= u < nu`, etc.
   size_t index_q(int u, int v, int w) const {
     return size_t(w * nv + v) * nu + u;
+  }
+  size_t index_q(size_t u, size_t v, size_t w) const {
+    return (w * nv + v) * nu + u;
   }
 
   /// Faster than index_s(), but works only if `-nu <= u < 2*nu`, etc.
@@ -433,7 +435,7 @@ struct Grid : GridBase<T> {
 
   /// https://en.wikipedia.org/wiki/Trilinear_interpolation
   /// x,y,z are grid coordinates (x=1.5 is between 2nd and 3rd grid point).
-  T interpolate_value(double x, double y, double z) const {
+  T trilinear_interpolation(double x, double y, double z) const {
     this->check_not_empty();
     int u, v, w;
     double xd = grid_modulo(x, nu, &u);
@@ -454,11 +456,11 @@ struct Grid : GridBase<T> {
     }
     return (T) lerp_(avg[0], avg[1], zd);
   }
-  T interpolate_value(const Fractional& fctr) const {
-    return interpolate_value(fctr.x * nu, fctr.y * nv, fctr.z * nw);
+  T trilinear_interpolation(const Fractional& fctr) const {
+    return trilinear_interpolation(fctr.x * nu, fctr.y * nv, fctr.z * nw);
   }
-  T interpolate_value(const Position& ctr) const {
-    return interpolate_value(unit_cell.fractionalize(ctr));
+  T trilinear_interpolation(const Position& ctr) const {
+    return trilinear_interpolation(unit_cell.fractionalize(ctr));
   }
 
   /// https://en.wikipedia.org/wiki/Tricubic_interpolation
@@ -515,9 +517,9 @@ struct Grid : GridBase<T> {
   void copy_4x4x4(double& x, double& y, double& z,
                   std::array<std::array<std::array<T,4>,4>,4>& copy) const {
     this->check_not_empty();
-    auto prepare_indices = [this](double& r, int nt, int (&indices)[4]) {
+    auto prepare_indices = [](double& r, int nt, int (&indices)[4]) {
       int t;
-      r = this->grid_modulo(r, nt, &t);
+      r = grid_modulo(r, nt, &t);
       indices[0] = (t != 0 ? t : nt) - 1;
       indices[1] = t;
       if (t + 2 < nt) {
@@ -538,14 +540,17 @@ struct Grid : GridBase<T> {
           copy[i][j][k] = this->get_value_q(u_indices[i], v_indices[j], w_indices[k]);
   }
 
-  /// @param order 1=nearest, 2=linear, 3=cubic interpolation
-  T interpolate(const Fractional& f, int order) const {
+  /// @param order 0=nearest, 1=linear, 3=cubic interpolation
+  T interpolate_value(const Fractional& f, int order=1) const {
     switch (order) {
-      case 1: return *const_cast<Grid<T>*>(this)->get_nearest_point(f).value;
-      case 2: return interpolate_value(f);
+      case 0: return *const_cast<Grid<T>*>(this)->get_nearest_point(f).value;
+      case 1: return trilinear_interpolation(f);
       case 3: return (T) tricubic_interpolation(f);
     }
-    throw std::invalid_argument("interpolation \"order\" must 1, 2 or 3");
+    throw std::invalid_argument("interpolation \"order\" must 0, 1 or 3");
+  }
+  T interpolate_value(const Position& ctr, int order=1) const {
+    return interpolate_value(unit_cell.fractionalize(ctr), order);
   }
 
   void get_subarray(T* dest, std::array<int,3> start, std::array<int,3> shape) const {
@@ -701,6 +706,7 @@ struct Grid : GridBase<T> {
       use_points_around<false>(fctr, radius, [&](T& ref, double) { ref = value; }, false);
   }
 
+  /// Change all occurrences of old_value to new_value
   void change_values(T old_value, T new_value) {
     for (auto& d : data)
       if (impl::is_same(d, old_value))
@@ -780,20 +786,23 @@ struct Grid : GridBase<T> {
     for (T& x : data)
       x = static_cast<T>((x - stats.dmean) / stats.rms);
   }
-
-  // TODO: can it be replaced with interpolate_grid(dest, src, Transform(), order)?
-  void resample_to(Grid<T>& dest, int order) const {
-    dest.check_not_empty();
-    int idx = 0;
-    for (int w = 0; w < dest.nw; ++w)
-      for (int v = 0; v < dest.nv; ++v)
-        for (int u = 0; u < dest.nu; ++u, ++idx) {
-          const Fractional f = dest.get_fractional(u, v, w);
-          dest.data[idx] = interpolate(f, order);
-        }
-  }
 };
 
+// TODO: add argument Box<Fractional> src_extent
+// cf. interpolate_grid_around_model() in solmask.hpp
+// cf interpolate_values in python/grid.cpp
+template<typename T>
+void interpolate_grid(Grid<T>& dest, const Grid<T>& src, const Transform& tr, int order=1) {
+  FTransform frac_tr = src.unit_cell.frac.combine(tr).combine(dest.unit_cell.orth);
+  size_t idx = 0;
+  for (int w = 0; w != dest.nw; ++w)
+    for (int v = 0; v != dest.nv; ++v)
+      for (int u = 0; u != dest.nu; ++u, ++idx) {
+        Fractional dest_fr = dest.get_fractional(u, v, w);
+        Fractional src_fr = frac_tr.apply(dest_fr);
+        dest.data[idx] = src.interpolate_value(src_fr, order);
+      }
+}
 
 template<typename T>
 Correlation calculate_correlation(const GridBase<T>& a, const GridBase<T>& b) {

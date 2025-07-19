@@ -47,6 +47,7 @@ template<int N> struct OptionalInt {
   int& operator*() { return value; }
   const int& operator*() const { return value; }
   int& emplace(int n) { value = n; return value; }
+  void reset() noexcept { value = None; }
 };
 
 struct SeqId {
@@ -73,6 +74,7 @@ struct SeqId {
   bool operator<(const SeqId& o) const {
     return (*num * 256 + icode) < (*o.num * 256 + o.icode);
   }
+  bool operator<=(const SeqId& o) const { return !(o < *this); }
 
   char has_icode() const { return icode != ' '; }
 

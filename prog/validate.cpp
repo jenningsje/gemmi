@@ -1,17 +1,16 @@
 // Copyright 2017-2020 Global Phasing Ltd.
 
-#include "gemmi/cif.hpp"
 #include "gemmi/ddl.hpp"
-#include "gemmi/gz.hpp"
 #include "gemmi/cifdoc.hpp"
 #include "gemmi/numb.hpp"
 #include "gemmi/dirwalk.hpp"  // for CifWalk
+#include "gemmi/read_cif.hpp"  // for read_cif_gz, check_cif_syntax_gz
 #include "validate_mon.h"  // for check_monomer_doc
-#include <cstdio>
-#include <iostream>
+#include <stdio.h>
 #include <stdexcept>  // for std::runtime_error
 
-#ifdef ANALYZE_RULES
+#ifdef GEMMI_ANALYZE_RULES
+# include "gemmi/cif.hpp"
 # include <tao/pegtl/analyze.hpp>
 #endif
 
@@ -24,7 +23,7 @@ namespace {
 
 enum OptionIndex {
   Quiet=4, Fast, Stat, Context, Ddl, NoRegex, NoMandatory, NoUniqueKeys,
-  Parents, Recurse, Monomer, Zscore, Ccd, AuditDate
+  Parents, Depo, Recurse, Monomer, Zscore, Ccd, AuditDate
 };
 const option::Descriptor Usage[] = {
   { NoOp, 0, "", "", Arg::None, "Usage: " EXE_NAME " [options] FILE [...]"
@@ -35,19 +34,25 @@ const option::Descriptor Usage[] = {
   { Quiet, 0, "q", "quiet", Arg::None, "  -q, --quiet  \tShow only errors." },
   { Fast, 0, "f", "fast", Arg::None, "  -f, --fast  \tSyntax-only check." },
   { Stat, 0, "s", "stat", Arg::None, "  -s, --stat  \tShow token statistics" },
+  { Recurse, 0, "r", "recursive", Arg::None,
+    "  -r, --recursive  \tRecurse directories and process all CIF files." },
   { Ddl, 0, "d", "ddl", Arg::Required, "  -d, --ddl=PATH  \tDDL for validation." },
+
+  { NoOp, 0, "", "", Arg::None, "\nOptional checks (when using DDL2):" },
   { Context, 0, "c", "context", Arg::None,
     "  -c, --context  \tCheck _pdbx_{category|item}_context.type." },
   { NoRegex, 0, "", "no-regex", Arg::None,
-    "  --no-regex  \tSkip regex checking (when using DDL2)" },
+    "  --no-regex  \tSkip regex checking" },
   { NoMandatory, 0, "", "no-mandatory", Arg::None,
     "  --no-mandatory  \tSkip checking if mandatory tags are present." },
   { NoUniqueKeys, 0, "", "no-unique", Arg::None,
-    "  --no-unique  \tSkip checking if category keys (DDL2) are unique." },
+    "  --no-unique  \tSkip checking if category keys are unique." },
   { Parents, 0, "p", "", Arg::None,
-    "  -p  \tCheck if parent items (DDL2) are present." },
-  { Recurse, 0, "r", "recursive", Arg::None,
-    "  -r, --recursive  \tRecurse directories and process all CIF files." },
+    "  -p  \tCheck if parent items are present." },
+  // instead of _item_type.code, _pdbx_item_enumeration.value, and _item_range
+  // use _pdbx-prefixed equivalents (_pdbx_item_type.code, etc).
+  { Depo, 0, "", "depo", Arg::None,
+    "  --depo  \tDeposition checks (_pdbx_item_range not _item_range, etc)." },
 
   { NoOp, 0, "", "", Arg::None, "\nValidation specific to CCP4 monomer files:" },
   { Monomer, 0, "m", "monomer", Arg::None,
@@ -153,20 +158,6 @@ std::string token_stats(const cif::Document& d) {
   return info;
 }
 
-// Empty loop is not a valid CIF syntax, but we parse it to accommodate
-// some broken CIF files. Only validation shows an error.
-void check_empty_loops(const cif::Block& block) {
-  for (const cif::Item& item : block.items) {
-    if (item.type == cif::ItemType::Loop) {
-      if (item.loop.values.empty() && !item.loop.tags.empty())
-        throw std::runtime_error("Empty loop in block " + block.name +
-                                 ": " + item.loop.tags[0]);
-    } else if (item.type == cif::ItemType::Frame) {
-      check_empty_loops(item.frame);
-    }
-  }
-}
-
 bool column_contains(const cif::Column& column, const char* value) {
   for (const std::string& v : column)
     if (cif::as_string(v) == value)
@@ -180,22 +171,17 @@ bool process_file(const char* path, const cif::Ddl& dict,
   bool ok = true;
   std::string msg;
   if (options[Verbose])
-    std::cout << "Reading " << path << "..." << std::endl;
+    printf("Reading %s...\n", path);
   try {
     if (options[Fast]) {
-      ok = cif::check_syntax_any(gemmi::MaybeGzipped(path), &msg);
+      ok = gemmi::check_cif_syntax_gz(path, &msg);
     } else {
-      cif::Document doc = cif::read(gemmi::MaybeGzipped(path));
-      for (const cif::Block& block : doc.blocks) {
-        if (block.name == " ")
-          std::cout << doc.source << ": missing block name (bare data_)\n";
-        check_empty_loops(block);
-      }
+      cif::Document doc = gemmi::read_cif_gz(path, /*check_level=*/2);
       if (options[Stat])
         msg = token_stats(doc);
       if (options[Ddl]) {
-        dict.check_audit_conform(doc, std::cout);
-        ok = dict.validate_cif(doc, std::cout);
+        dict.check_audit_conform(doc);
+        ok = dict.validate_cif(doc);
       }
 
       if (options[Monomer] || options[Zscore] || options[Ccd]) {
@@ -212,7 +198,7 @@ bool process_file(const char* path, const cif::Ddl& dict,
             if (options[Ccd]) {
               auto it = ccd_map.find(cc_name);
               if (it == ccd_map.end()) {
-                std::cout << cc_name << " [ccd] monomer not found in CCD file(s)\n";
+                printf("%s [ccd] monomer not found in CCD file(s)\n", cc_name.c_str());
                 continue;
               }
               const cif::Block& ccd_block = it->second;
@@ -221,16 +207,15 @@ bool process_file(const char* path, const cif::Ddl& dict,
                                    .find_values("_pdbx_chem_comp_audit.date");
                 if (!column_contains(col, options[AuditDate].arg)) {
                   if (options[Verbose])
-                    std::cout << cc_name << " [ccd] ignored - audit date does not match\n";
+                    printf("%s [ccd] ignored - audit date does not match\n", cc_name.c_str());
                   continue;
                 }
               }
               compare_monomer_with_ccd(block, ccd_block, options[Verbose]);
             }
           } catch (const std::exception& e) {
-            std::cerr << "Failed to interpret monomer: block " << block.name
-                      << " from " << doc.source << '\n'
-                      << e.what() << std::endl;
+            fprintf(stderr, "Failed to interpret monomer: block %s from %s\n%s\n",
+                    block.name.c_str(), doc.source.c_str(), e.what());
           }
         }
       }
@@ -240,10 +225,10 @@ bool process_file(const char* path, const cif::Ddl& dict,
     msg = e.what();
   }
   if (!msg.empty())
-    std::cout << msg << std::endl;
+    printf("%s\n", msg.c_str());
 
   if (options[Verbose])
-    std::cout << (ok ? "OK" : "FAILED") << std::endl;
+    puts(ok ? "OK" : "FAILED");
   return ok;
 }
 
@@ -251,9 +236,8 @@ bool process_file(const char* path, const cif::Ddl& dict,
 
 
 int GEMMI_MAIN(int argc, char **argv) {
-#ifdef ANALYZE_RULES // for debugging only
+#ifdef GEMMI_ANALYZE_RULES // for debugging only
   tao::pegtl::analyze<cif::rules::file>();
-  tao::pegtl::analyze<cif::numb_rules::numb>();
 #endif
   OptParser p(EXE_NAME);
   p.simple_parse(argc, argv, Usage);
@@ -261,19 +245,20 @@ int GEMMI_MAIN(int argc, char **argv) {
 
   bool total_ok = true;
   cif::Ddl dict;
+  dict.logger = {&gemmi::Logger::to_stdout, 5 + p.options[Verbose].count()};
   dict.print_unknown_tags = !p.options[Quiet];
   dict.use_regex = !p.options[NoRegex];
   dict.use_context = p.options[Context];
   dict.use_parents = p.options[Parents];
+  dict.use_deposition_checks = p.options[Depo];
   dict.use_mandatory = !p.options[NoMandatory];
   dict.use_unique_keys = !p.options[NoUniqueKeys];
-  dict.print_extra_diagnostics = p.options[Verbose];
   if (p.options[Ddl]) {
     try {
       for (option::Option* ddl = p.options[Ddl]; ddl; ddl = ddl->next())
-        dict.read_ddl(cif::read_file(ddl->arg), std::cout);
+        dict.read_ddl(gemmi::read_cif_gz(ddl->arg));
     } catch (std::runtime_error& e) {
-      std::cerr << "Error when reading dictionary: " << e.what() << std::endl;
+      fprintf(stderr, "Error when reading dictionary: %s\n", e.what());
       return EXIT_FAILURE;
     }
   }
@@ -281,14 +266,14 @@ int GEMMI_MAIN(int argc, char **argv) {
   if (p.options[Ccd]) {
     try {
       for (option::Option* ccd = p.options[Ccd]; ccd; ccd = ccd->next()) {
-        cif::Document ccd_doc(cif::read(gemmi::MaybeGzipped(ccd->arg)));
+        cif::Document ccd_doc(gemmi::read_cif_gz(ccd->arg));
         for (cif::Block& ccd_block : ccd_doc.blocks) {
           std::string name = ccd_block.name;
           ccd_map.emplace(name, std::move(ccd_block));
         }
       }
     } catch (std::runtime_error& e) {
-      std::cerr << "Error when reading CCD file: " << e.what() << std::endl;
+      fprintf(stderr, "Error when reading CCD file: %s\n", e.what());
       return EXIT_FAILURE;
     }
   }

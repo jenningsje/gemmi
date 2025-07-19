@@ -6,9 +6,10 @@
 
 void print_version(const char* program_name, bool verbose);  // in options.h
 
+int align_main(int argc, char** argv);
 int blobs_main(int argc, char** argv);
-int cif2mtz_main(int argc, char** argv);
 int cif2json_main(int argc, char** argv);
+int cif2mtz_main(int argc, char** argv);
 int cifdiff_main(int argc, char** argv);
 int contact_main(int argc, char** argv);
 int contents_main(int argc, char** argv);
@@ -19,20 +20,21 @@ int fprime_main(int argc, char** argv);
 int grep_main(int argc, char** argv);
 int h_main(int argc, char** argv);
 int json2cif_main(int argc, char** argv);
-int map_main(int argc, char** argv);
 int map2sf_main(int argc, char** argv);
+int map_main(int argc, char** argv);
 int mask_main(int argc, char** argv);
 int merge_main(int argc, char** argv);
 int mondiff_main(int argc, char** argv);
-int mtz_main(int argc, char** argv);
 int mtz2cif_main(int argc, char** argv);
+int mtz_main(int argc, char** argv);
 int reindex_main(int argc, char** argv);
 int residues_main(int argc, char** argv);
 int rmsz_main(int argc, char** argv);
-int align_main(int argc, char** argv);
+int set_main(int argc, char** argv);
 int sf2map_main(int argc, char** argv);
 int sfcalc_main(int argc, char** argv);
 int sg_main(int argc, char** argv);
+int ss_main(int argc, char** argv);
 int tags_main(int argc, char** argv);
 int validate_main(int argc, char** argv);
 int wcn_main(int argc, char** argv);
@@ -49,11 +51,11 @@ struct SubCmd {
 };
 
 #define CMD(s, desc) { #s, &s##_main, desc }
-static SubCmd subcommands[] = {
+SubCmd subcommands[] = {
   CMD(align, "sequence alignment (global, pairwise, affine gap penalty)"),
   CMD(blobs, "list unmodelled electron density blobs"),
-  CMD(cif2mtz, "convert structure factor mmCIF to MTZ"),
   CMD(cif2json, "translate (mm)CIF to (mm)JSON"),
+  CMD(cif2mtz, "convert structure factor mmCIF to MTZ"),
   CMD(cifdiff, "compare tags in two (mm)CIF files"),
   CMD(contact, "searches for contacts (neighbouring atoms)"),
   CMD(contents, "info about content of a coordinate file (pdb, mmCIF, ...)"),
@@ -67,16 +69,18 @@ static SubCmd subcommands[] = {
   CMD(map, "print info or modify a CCP4 map"),
   CMD(map2sf, "transform CCP4 map to map coefficients (in MTZ or mmCIF)"),
   CMD(mask, "make a bulk-solvent mask in the CCP4 format"),
-  CMD(merge, "merge intensities from multi-record reflection file"),
+  CMD(merge, "merge or compare intensities from reflection file(s)"),
   CMD(mondiff, "compare two monomer CIF files"),
   CMD(mtz, "print info about MTZ reflection file"),
   CMD(mtz2cif, "convert MTZ to structure factor mmCIF"),
   CMD(reindex, "reindex MTZ file"),
   CMD(residues, "list residues from a coordinate file"),
   CMD(rmsz, "validate geometry using monomer library"),
+  CMD(set, "modify coordinate files (think pdbset)"),
   CMD(sf2map, "transform map coefficients (from MTZ or mmCIF) to map"),
   CMD(sfcalc, "calculate structure factors from a model"),
   CMD(sg, "info about space groups"),
+  CMD(ss, "determine secondary structure structure of polypeptide chains"),
   CMD(tags, "list tags from CIF file(s)"),
   CMD(validate, "validate CIF 1.1 syntax"),
   CMD(wcn, "calculate local density / contact numbers (WCN, CN, ACN, LDM)"),

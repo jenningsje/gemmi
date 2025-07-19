@@ -6,8 +6,7 @@
 #include "gemmi/enumstr.hpp"   // for entity_type_to_string
 #include "gemmi/to_mmcif.hpp"  // for write_struct_conn
 #include "gemmi/sprintf.hpp"   // for to_str, to_str_prec
-#include "gemmi/calculate.hpp" // for find_best_plane
-#include "gemmi/select.hpp"    // for count_atom_sites
+#include "gemmi/calculate.hpp" // for count_atom_sites, find_best_plane
 #include "gemmi/to_chemcomp.hpp" // for add_chemcomp_to_block
 #include "gemmi/contact.hpp"   // for ContactSearch
 #include "gemmi/version.hpp"   // for GEMMI_VERSION
@@ -15,7 +14,7 @@
 namespace gemmi {
 
 // DOD.cif was removed from CCP4 monomer library, change it to HOH
-void change_any_water_to_hoh(Structure& st) {
+static void change_any_water_to_hoh(Structure& st) {
   for (Model& model : st.models)
     for (Chain& chain : model.chains)
       for (Residue& res : chain.residues)
@@ -119,6 +118,8 @@ void add_automatic_links(Model& model, Structure& st, const MonLib& monlib) {
     st.connections.push_back(conn);
   });
 }
+
+namespace {
 
 cif::Block prepare_crd(const Structure& st, const Topo& topo,
                        HydrogenChange h_change, const std::string& info_comment) {
@@ -322,7 +323,7 @@ cif::Block prepare_crd(const Structure& st, const Topo& topo,
         vv.emplace_back(refmac_calc_flag(a));
         vv.emplace_back(1, '.'); // label_seg_id
         vv.emplace_back(a.name); // again
-        vv.emplace_back(cc_atom.chem_type); // label_chem_id
+        vv.emplace_back(cc_atom.is_hydrogen() ? "H" : cc_atom.chem_type); // label_chem_id
         if (write_anisou) {
           if (a.aniso.nonzero()) {
             for (float u : {a.aniso.u11, a.aniso.u22, a.aniso.u33,
@@ -342,13 +343,13 @@ std::string to_str_dot(double d) {
   return std::isnan(d) ? "." : to_str_prec<Prec>(d);
 }
 
-static void add_restraint_row(cif::Loop& restr_loop,
-                              const char* record, int counter,
-                              const std::string& label, const std::string& period,
-                              std::initializer_list<const Atom*> atoms,
-                              double value, double dev,
-                              double value_nucleus, double dev_nucleus,
-                              double obs) {
+void add_restraint_row(cif::Loop& restr_loop,
+                       const char* record, int counter,
+                       const std::string& label, const std::string& period,
+                       std::initializer_list<const Atom*> atoms,
+                       double value, double dev,
+                       double value_nucleus, double dev_nucleus,
+                       double obs) {
   // Ignore restraints with zero-occupancy atoms (NoZeroOccRestr)
   // Perhaps it could be done earlier, in Topo::apply_restraints().
   for (const Atom* a : atoms)
@@ -383,15 +384,15 @@ static void add_restraint_row(cif::Loop& restr_loop,
 
 // For printing _restr.val_obs for torsion angles [-180,180].
 // Numerical errors still can change the output, but it's less likely.
-static double make_torsion_angle_consistent(double d) {
+double make_torsion_angle_consistent(double d) {
   if (d < -179.99999)  // ensure 180.000 instead of -180.000,
     d += 360.;
   return std::fabs(d) > 1e-5 ? d : 0.;  // ensure 0.000 instead of -0.000
 }
 
-static void add_restraints(const Topo::Rule rule, const Topo& topo,
-                           cif::Loop& restr_loop, int (&counters)[6],
-                           const UnitCell* cell=nullptr) {
+void add_restraints(const Topo::Rule rule, const Topo& topo,
+                    cif::Loop& restr_loop, int (&counters)[6],
+                    const UnitCell* cell=nullptr) {
   if (rule.rkind == Topo::RKind::Bond) {
     const Topo::Bond& t = topo.bonds[rule.index];
     if (cell == nullptr) {  // don't use symmetry
@@ -528,6 +529,8 @@ cif::Block prepare_rst(const Topo& topo, const MonLib& monlib, const UnitCell& c
 
   return block;
 }
+
+} // anonymous namespace
 
 cif::Document prepare_refmac_crd(Structure& st, const Topo& topo,
                                  const MonLib& monlib, HydrogenChange h_change) {

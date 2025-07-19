@@ -3,8 +3,9 @@
 import gzip
 from io import StringIO
 import os
-import sys
+import pickle
 import unittest
+
 import gemmi
 from common import full_path, get_path_for_tempfile
 try:
@@ -14,7 +15,7 @@ except ImportError:
 
 def is_written_to_pdb(line, via_cif):
     if line[:6] in ['COMPND', 'SOURCE', 'MDLTYP', 'AUTHOR', 'REVDAT', 'JRNL  ',
-                    'SEQADV', 'HET   ', 'HETNAM', 'FORMUL',
+                    'SEQADV', 'HETNAM', 'FORMUL',
                     'SITE  ', 'MASTER', 'CONECT']:
         return False
     # ORIGX is written only if it is a non-identity matrix
@@ -121,7 +122,7 @@ ANISOU   67  N   VAL A  10     2079   1653   1371   -123    133   -148       N
 """  # noqa: W291 - trailing whitespace
 
 # from https://cci.lbl.gov/hybrid_36/
-HY36_EXAMPLE = """\
+HY36_EXAMPLE = b"""\
 ATOM  99998  SD  MET L9999      48.231 -64.383  -9.257  1.00 11.54           S
 ATOM  99999  CE  MET L9999      49.398 -63.242 -10.211  1.00 14.60           C
 ATOM  A0000  N   VAL LA000      52.228 -67.689 -12.196  1.00  8.76           N
@@ -144,6 +145,19 @@ def read_lines_and_remove(path):
 
 
 class TestMol(unittest.TestCase):
+    def test_atom(self):
+        atom = gemmi.Atom()
+        atom.occ = 0.5
+        atom.element = gemmi.Element('C')
+        atom.name = "CA"
+        atom.pos = (-3, 4.5, 0)
+        self.assertEqual(atom.occ, 0.5)
+        self.assertEqual(atom.element.name, 'C')
+        self.assertEqual(atom.name, 'CA')
+        self.assertEqual(atom.pos.tolist(), [-3, 4.5, 0])
+        atom.pos = gemmi.Position(0, -2, 2.5)
+        self.assertEqual(atom.pos.tolist(), [0, -2, 2.5])
+
     def test_residue(self):
         res = gemmi.Residue()
         self.assertEqual(res.label_seq, None)
@@ -216,6 +230,8 @@ class TestMol(unittest.TestCase):
               '_struct_keywords.', '_struct_ref.', '_struct_ref_seq.',
               '_symmetry.']
         self.assertEqual(common_categories, cc)
+        mismatching = {'_struct_conf.id', '_chem_comp.type',
+                       '_refine.ls_number_reflns_R_work'}
         for name in common_categories:
             cat_in = block.get_mmcif_category(name)
             cat_out = output_block.get_mmcif_category(name)
@@ -228,10 +244,9 @@ class TestMol(unittest.TestCase):
                     try:
                         if a == b or abs(float(a) - float(b)) < 2e-4:
                             continue
-                    except ValueError:
+                    except (ValueError, TypeError):
                         pass
-                    self.assertTrue(name+tag in ['_struct_conf.id',
-                                                 '_chem_comp.type'])
+                    self.assertTrue(name+tag in mismatching, name+tag)
         for name_out in cnames_out:
             self.assertTrue(name_out in cnames)
 
@@ -343,8 +358,6 @@ class TestMol(unittest.TestCase):
         st = gemmi.make_structure_from_block(input_block)
         output_block = st.make_mmcif_document().sole_block()
         software = output_block.get_mmcif_category('_software')
-        del software['date']
-        del software['description']
         assert software['version'][0] is False
         software['version'][0] = None
         self.assertEqual(input_block.get_mmcif_category('_software'), software)
@@ -411,13 +424,20 @@ class TestMol(unittest.TestCase):
     def test_read_1pfe_cif(self):
         st = gemmi.read_structure(full_path('1pfe.cif.gz'))
         self.check_1pfe(st)
+        mmcif_doc = st.make_mmcif_document()
 
-        # write structure to cif and read it back
+        # write structure to cif file and read it back
         out_name = get_path_for_tempfile(suffix='.cif')
-        st.make_mmcif_document().write_file(out_name)
+        mmcif_doc.write_file(out_name)
         st2 = gemmi.read_structure(out_name)
         os.remove(out_name)
         self.check_1pfe(st2)
+
+        # write structure to mmJSON string and read it back
+        json_str = mmcif_doc.as_json(mmjson=True)
+        doc = gemmi.cif.read_mmjson_string(json_str)
+        st3 = gemmi.make_structure_from_block(doc[0])
+        self.check_1pfe(st3)
 
     def test_read_1pfe_json(self):
         st = gemmi.read_structure(full_path('1pfe.json'))
@@ -476,8 +496,7 @@ class TestMol(unittest.TestCase):
 
     def test_read_write_1lzh(self, via_cif=False):
         path = full_path('1lzh.pdb.gz')
-        mode = 'rt' if sys.version_info >= (3,) else 'r'
-        with gzip.open(path, mode=mode) as f:
+        with gzip.open(path, mode='rt') as f:
             expected = [line for line in f if is_written_to_pdb(line, via_cif)]
         out_lines = self.write_and_read(gemmi.read_structure(path), via_cif)
         self.assertEqual(expected[0], out_lines[0])
@@ -669,20 +688,20 @@ class TestMol(unittest.TestCase):
         del st[0]['A'][3]
         self.assertEqual(len(st[0]['A']), 6)
         self.assertEqual(len(st), 2)
-        self.assertEqual(st[0].name, '1')
-        del st['1']
+        self.assertEqual(st[0].num, 1)
+        del st[0]
         self.assertEqual(len(st), 1)
-        self.assertEqual(st[0].name, '2')
+        self.assertEqual(st[0].num, 2)
         st.renumber_models()
-        self.assertEqual(st[0].name, '1')
+        self.assertEqual(st[0].num, 1)
         st.add_model(st[0])
         st.add_model(st[0])
         st.renumber_models()
-        self.assertEqual(st[0].name, '1')
-        self.assertEqual(st[-1].name, '3')
+        self.assertEqual(st[0].num, 1)
+        self.assertEqual(st[-1].num, 3)
         del st[:-1]
         self.assertEqual(len(st), 1)
-        self.assertEqual(st[0].name, '3')
+        self.assertEqual(st[0].num, 3)
         del st[0]
         self.assertEqual(len(st), 0)
 
@@ -757,7 +776,7 @@ class TestMol(unittest.TestCase):
                          [atom.name for atom in res1 if atom.altloc != 'B'])
 
     def test_model_all(self):
-        model = gemmi.Model('1')
+        model = gemmi.Model(1)
         for name in 'ABCDEFG':
             model.add_chain(gemmi.Chain(name))
         expected = []
@@ -867,6 +886,24 @@ class TestMol(unittest.TestCase):
         st.assign_serial_numbers(numbered_ter=True)
         self.assertEqual(write_and_read(preserve_serial=True),
                          [('B OXT', 1), ('B CU', 3), ('A CU', 4)])
+
+    def test_serialization(self):
+        st = gemmi.read_structure(full_path('5e5z.pdb'))
+        unpickled = pickle.loads(pickle.dumps(st))
+        self.assertEqual(st.make_pdb_string(), unpickled.make_pdb_string())
+        unpickled[0] = pickle.loads(pickle.dumps(st[0]))
+        self.assertEqual(st.make_pdb_string(), unpickled.make_pdb_string())
+        chain = st[0][0]
+        unpickled_chain = pickle.loads(pickle.dumps(chain))
+        self.assertEqual(chain.name, unpickled_chain.name)
+        self.assertEqual(len(chain), len(unpickled_chain))
+        res = chain[0]
+        unpickled_res = pickle.loads(pickle.dumps(res))
+        self.assertEqual(res.name, unpickled_res.name)
+        self.assertEqual(len(res), len(unpickled_res))
+        atom = res[1]
+        unpickled_atom = pickle.loads(pickle.dumps(atom))
+        self.assertEqual(atom.name, unpickled_atom.name)
 
 if __name__ == '__main__':
     unittest.main()

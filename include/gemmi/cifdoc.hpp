@@ -1,7 +1,7 @@
 // Copyright 2017 Global Phasing Ltd.
 //
-// struct Document that represents the CIF file (but can be also
-// read from JSON file, such as CIF-JSON or mmJSON).
+// struct Document that represents the CIF file (but can also be
+// read from a different representation, such as CIF-JSON or mmJSON).
 
 #ifndef GEMMI_CIFDOC_HPP_
 #define GEMMI_CIFDOC_HPP_
@@ -9,7 +9,6 @@
 #include "atox.hpp"  // for string_to_int
 #include "fail.hpp"  // for fail
 #include "util.hpp"  // for starts_with, to_lower, cat
-#include <cassert>
 #include <cstddef>   // for size_t
 #include <cstring>   // for memchr
 #include <algorithm> // for move, find_if, all_of, min, rotate
@@ -149,13 +148,19 @@ struct Loop {
 
   void clear() { tags.clear(); values.clear(); }
 
-  template <typename T> void add_row(T new_values, int pos=-1) {
-    if (new_values.size() != tags.size())
-      fail("add_row(): wrong row length.");
+  template <typename T> void add_values(T new_values, int pos=-1) {
     auto it = values.end();
     if (pos >= 0 && pos * width() < values.size())
       it = values.begin() + pos * tags.size();
     values.insert(it, new_values.begin(), new_values.end());
+  }
+  void add_values(std::initializer_list<std::string> new_values, int pos=-1) {
+    add_values<std::initializer_list<std::string>>(new_values, pos);
+  }
+  template <typename T> void add_row(T new_values, int pos=-1) {
+    if (new_values.size() != tags.size())
+      fail("add_row(): wrong row length.");
+    add_values<T>(new_values, pos);
   }
   void add_row(std::initializer_list<std::string> new_values, int pos=-1) {
     add_row<std::initializer_list<std::string>>(new_values, pos);
@@ -166,7 +171,7 @@ struct Loop {
       fail("add_comment_and_row(): wrong row length.");
     std::vector<std::string> vec(ss.begin() + 1, ss.end());
     vec[0] = cat('#', *ss.begin(), '\n', vec[0]);
-    return add_row(vec);
+    add_row(vec);
   }
   void pop_row() {
     if (values.size() < tags.size())
@@ -326,9 +331,9 @@ struct Table {
     const std::string& one_of(size_t n1, size_t n2) const {
       static const std::string nul(1, '.');
       if (has2(n1))
-       return operator[](n1);
+        return operator[](n1);
       if (has(n2))
-       return operator[](n2);
+        return operator[](n2);
       return nul;
     }
 
@@ -354,11 +359,10 @@ struct Table {
   size_t length() const;
   size_t size() const { return length(); }
   bool has_column(int n) const { return ok() && positions.at(n) >= 0; }
-  int first_of(int n1, int n2) const { return positions.at(n1) >= 0 ? n1 : n2; }
   Row tags() { return Row{*this, -1}; }
   Row operator[](int n) { return Row{*this, n}; }
 
-  void at_check(int& n) {
+  void at_check(int& n) const {
     if (n < 0)
       n += length();
     if (n < 0 || static_cast<size_t>(n) >= length())
@@ -385,7 +389,7 @@ struct Table {
 
   Row find_row(const std::string& s);
 
-  template <typename T> void append_row(T new_values);
+  template <typename T> void append_row(const T& new_values);
   void append_row(std::initializer_list<std::string> new_values) {
     append_row<std::initializer_list<std::string>>(new_values);
   }
@@ -425,7 +429,8 @@ struct Table {
 
   void erase();
 
-  void convert_pair_to_loop();
+  /// if it's pairs, convert it to loop
+  void ensure_loop();
 
   // It is not a proper input iterator, but just enough for using range-for.
   struct iterator {
@@ -441,7 +446,6 @@ struct Table {
   iterator end() { return iterator{*this, (int)length()}; }
 };
 
-
 struct Block {
   std::string name;
   std::vector<Item> items;
@@ -449,7 +453,7 @@ struct Block {
   explicit Block(const std::string& name_);
   Block();
 
-  void swap(Block& o) { name.swap(o.name); items.swap(o.items); }
+  void swap(Block& o) noexcept { name.swap(o.name); items.swap(o.items); }
   // access functions
   const Item* find_pair_item(const std::string& tag) const;
   const Pair* find_pair(const std::string& tag) const;
@@ -521,6 +525,7 @@ struct Item {
     Block frame;
   };
 
+  Item() : type(ItemType::Erased) {}
   explicit Item(LoopArg)
     : type{ItemType::Loop}, loop{} {}
   explicit Item(std::string&& t)
@@ -721,7 +726,7 @@ inline std::string& Table::Row::value_at_unsafe(int pos) {
   return tab.bloc.items[pos].pair[1];
 }
 
-inline Loop* Table::get_loop() {
+inline Loop* Table::get_loop() {  // NOLINT(readability-make-member-function-const)
   return loop_item ? &loop_item->loop : nullptr;
 }
 
@@ -741,13 +746,13 @@ inline Table::Row Table::find_row(const std::string& s) {
   fail("Not found in " + *column_at_pos(pos).get_tag() + ": " + s);
 }
 
-template <typename T> void Table::append_row(T new_values) {
+template <typename T> void Table::append_row(const T& new_values) {
   if (!ok())
     fail("append_row(): table not found");
   if (new_values.size() != width())
     fail("append_row(): wrong row length");
   if (!loop_item)
-    convert_pair_to_loop();
+    fail("append_row(): data is not in loop, call ensure_loop() first");
   Loop& loop = loop_item->loop;
   size_t cur_size = loop.values.size();
   loop.values.resize(cur_size + loop.width(), ".");
@@ -760,8 +765,7 @@ inline void Table::remove_rows(int start, int end) {
   if (!ok())
     // this function is used mostly through remove_row()
     fail("remove_row(): table not found");
-  if (!loop_item)
-    convert_pair_to_loop();
+  ensure_loop();  // should we fail instead if we have pairs?
   Loop& loop = loop_item->loop;
   size_t start_pos = start * loop.width();
   size_t end_pos = end * loop.width();
@@ -789,18 +793,20 @@ inline void Table::erase() {
   positions.clear();
 }
 
-inline void Table::convert_pair_to_loop() {
-  assert(loop_item == nullptr);
+inline void Table::ensure_loop() {
+  if (loop_item)
+    return;
   Item new_item(LoopArg{});
   new_item.loop.tags.resize(positions.size());
   new_item.loop.values.resize(positions.size());
+  loop_item = &bloc.items.at(positions[0]);
   for (size_t i = 0; i != positions.size(); ++i) {
     Item& item = bloc.items[positions[i]];
     new_item.loop.tags[i].swap(item.pair[0]);
     new_item.loop.values[i].swap(item.pair[1]);
     item.erase();
+    positions[i] = i;
   }
-  loop_item = &bloc.items.at(positions[0]);
   loop_item->set_value(std::move(new_item));
 }
 
@@ -826,7 +832,6 @@ inline Column Block::find_loop(const std::string& tag) {
 }
 
 inline const Item* Block::find_loop_item(const std::string& tag) const {
-  std::string lctag = gemmi::to_lower(tag);
   for (const Item& i : items)
     if (i.type == ItemType::Loop && i.loop.find_tag_lc(tag) != -1)
       return &i;
@@ -1012,13 +1017,12 @@ inline Table Block::find_any(const std::string& prefix,
             indices.push_back(idx);
         }
         return Table{item, *this, indices, prefix.length()};
-      } else {
-        indices.push_back(item - items.data());
-        while (++tag != tags.end())
-          if (const Item* p = find_pair_item(prefix + *tag))
-            indices.push_back(p - items.data());
-        return Table{nullptr, *this, indices, prefix.length()};
       }
+      indices.push_back(item - items.data());
+      while (++tag != tags.end())
+        if (const Item* p = find_pair_item(prefix + *tag))
+          indices.push_back(p - items.data());
+      break;
     }
   }
   return Table{nullptr, *this, indices, prefix.length()};
@@ -1039,9 +1043,8 @@ inline Table Block::find_mmcif_category(std::string cat) {
             fail("Tag ", tag, " in loop with ", cat);
         }
         return Table{&i, *this, indices, cat.length()};
-      } else {
-        indices.push_back(&i - items.data());
       }
+      indices.push_back(&i - items.data());
     }
   return Table{nullptr, *this, indices, cat.length()};
 }
@@ -1152,6 +1155,19 @@ inline void check_for_duplicates(const Document& d) {
         if (!ok)
           cif_fail(d.source, block, item, "duplicate save_" + item.frame.name);
       }
+    }
+  }
+}
+
+// Empty loop is not a valid CIF syntax, but we parse it to accommodate
+// some broken CIF files. Only check_level>=2 shows an error.
+inline void check_empty_loops(const cif::Block& block, const std::string& source) {
+  for (const cif::Item& item : block.items) {
+    if (item.type == cif::ItemType::Loop) {
+      if (item.loop.values.empty() && !item.loop.tags.empty())
+        cif_fail(source, block, item, "empty loop with " + item.loop.tags[0]);
+    } else if (item.type == cif::ItemType::Frame) {
+      check_empty_loops(item.frame, source);
     }
   }
 }

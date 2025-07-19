@@ -25,6 +25,8 @@ struct SoftwareItem {
   std::string version;
   std::string date;
   std::string description;
+  std::string contact_author;
+  std::string contact_author_email;
   Classification classification = Unspecified;
 };
 
@@ -93,26 +95,34 @@ struct TlsGroup {
     SeqId res_end;
     std::string details;  // _pdbx_refine_tls_group.selection_details
   };
-  std::string id;           // _pdbx_refine_tls.id
+  short num_id = -1;      // id stored as number (optimization)
+  std::string id;         // _pdbx_refine_tls.id
   std::vector<Selection> selections;
-  Position origin;          // _pdbx_refine_tls.origin_x/y/z
-  Mat33 T;                  // _pdbx_refine_tls.T[][]
-  Mat33 L;                  // _pdbx_refine_tls.L[][]
-  Mat33 S;                  // _pdbx_refine_tls.S[][]
+  Position origin;        // _pdbx_refine_tls.origin_x/y/z
+  SMat33<double> T = {NAN, NAN, NAN, NAN, NAN, NAN};  // _pdbx_refine_tls.T[][]
+  SMat33<double> L = {NAN, NAN, NAN, NAN, NAN, NAN};  // _pdbx_refine_tls.L[][]
+  Mat33 S = Mat33{NAN};   // _pdbx_refine_tls.S[][]
 };
 
 // RefinementInfo corresponds to REMARK 3.
 // BasicRefinementInfo is used for both total and per-bin statistics.
 // For per-bin data, each values corresponds to one _refine_ls_shell.* tag.
 struct BasicRefinementInfo {
-  double resolution_high = NAN;      // _refine.ls_d_res_high
-  double resolution_low = NAN;       // _refine.ls_d_res_low
-  double completeness = NAN;         // _refine.ls_percent_reflns_obs
-  int reflection_count = -1;         // _refine.ls_number_reflns_obs
-  int rfree_set_count = -1;          // _refine.ls_number_reflns_R_free
-  double r_all = NAN;                // _refine.ls_R_factor_obs
-  double r_work = NAN;               // _refine.ls_R_factor_R_work
-  double r_free = NAN;               // _refine.ls_R_factor_R_free
+  double resolution_high = NAN; // _refine.ls_d_res_high,         _refine_ls_shell.d_res_high
+  double resolution_low = NAN;  // _refine.ls_d_res_low,          _refine_ls_shell.d_res_low
+  double completeness = NAN;    // _refine.ls_percent_reflns_obs, _refine_ls_shell.percent...
+  int reflection_count = -1;    // _refine.ls_number_reflns_obs,  _refine_ls_shell.number...
+  int work_set_count = -1;      // _refine.ls_number_reflns_R_work, _refine_ls_shell.number...
+  int rfree_set_count = -1;     // _refine.ls_number_reflns_R_free, _refine_ls_shell.number...
+  double r_all = NAN;           // _refine.ls_R_factor_obs,       _refine_ls_shell.R_factor_obs
+  double r_work = NAN;          // _refine.ls_R_factor_R_work,    _refine_ls_shell.R_factor_R_work
+  double r_free = NAN;          // _refine.ls_R_factor_R_free,    _refine_ls_shell.R_factor_R_free
+  double cc_fo_fc_work = NAN;   // _refine.correlation_coeff_Fo_to_Fc, _refine_ls_shell.corr...
+  double cc_fo_fc_free = NAN;   // _refine.correlation_coeff_Fo_to_Fc_free, _refine_ls_shell.c...
+  double fsc_work = NAN;        // _refine.pdbx_average_fsc_work, _refine_ls_shell.pdbx_fsc_work
+  double fsc_free = NAN;        // _refine.pdbx_average_fsc_free, _refine_ls_shell.pdbx_fsc_free
+  double cc_intensity_work = NAN;  // _refine.correlation_coeff_I_to_Fcsqd_work, ...
+  double cc_intensity_free = NAN;  // _refine.correlation_coeff_I_to_Fcsqd_free, ...
 };
 
 struct RefinementInfo : BasicRefinementInfo {
@@ -132,14 +142,12 @@ struct RefinementInfo : BasicRefinementInfo {
   int bin_count = -1;        // _refine_ls_shell.pdbx_total_number_of_bins_used
   std::vector<BasicRefinementInfo> bins;
   double mean_b = NAN;                // _refine.B_iso_mean
-  Mat33 aniso_b{NAN};                 // _refine.aniso_B[][]
+  SMat33<double> aniso_b{NAN, NAN, NAN, NAN, NAN, NAN};  // _refine.aniso_B[][]
   double luzzati_error = NAN; // _refine_analyze.Luzzati_coordinate_error_obs
   double dpi_blow_r = NAN;            // _refine.pdbx_overall_SU_R_Blow_DPI
   double dpi_blow_rfree = NAN;        // _refine.pdbx_overall_SU_R_free_Blow_DPI
   double dpi_cruickshank_r = NAN;     // _refine.overall_SU_R_Cruickshank_DPI
   double dpi_cruickshank_rfree = NAN; // _refine.pdbx_overall_SU_R_free_Cruickshank_DPI
-  double cc_fo_fc = NAN;              // _refine.correlation_coeff_Fo_to_Fc
-  double cc_fo_fc_free = NAN;         // _refine.correlation_coeff_Fo_to_Fc_free
   std::vector<Restr> restr_stats;     // _refine_ls_restr
   std::vector<TlsGroup> tls_groups;   // _pdbx_refine_tls
   std::string remarks;
@@ -168,17 +176,26 @@ struct Metadata {
     return std::any_of(refinement.begin(), refinement.end(),
             [&](const RefinementInfo& r) { return !(r.*field).empty(); });
   }
-  bool has(Mat33 RefinementInfo::*field) const {
+  bool has(SMat33<double> RefinementInfo::*field) const {
     return std::any_of(refinement.begin(), refinement.end(),
-        [&](const RefinementInfo& r) { return !std::isnan((r.*field)[0][0]); });
+        [&](const RefinementInfo& r) { return !std::isnan((r.*field).u11); });
   }
   bool has_restr() const {
     return std::any_of(refinement.begin(), refinement.end(),
             [&](const RefinementInfo& r) { return !r.restr_stats.empty(); });
   }
-  bool has_tls() const {
-    return std::any_of(refinement.begin(), refinement.end(),
-            [&](const RefinementInfo& r) { return !r.tls_groups.empty(); });
+
+  // TLS constraint are not specific to refinement in joint refinement,
+  // so they are expected to be present only in a single RefinementInfo.
+  // As of 2025, two PDB entries have TLS + joint refinement: 6N3U and 5NKU.
+  std::vector<gemmi::TlsGroup>* get_tls_groups() {
+    for (gemmi::RefinementInfo& ref : refinement)
+      if (!ref.tls_groups.empty())
+        return &ref.tls_groups;
+    return nullptr;
+  }
+  const std::vector<gemmi::TlsGroup>* get_tls_groups() const {
+    return const_cast<Metadata*>(this)->get_tls_groups();
   }
 };
 
@@ -243,7 +260,7 @@ struct Entity {
   std::vector<std::string> full_sequence;
 
   Entity() = default;
-  explicit Entity(std::string name_) noexcept : name(name_) {}
+  explicit Entity(const std::string& name_) noexcept : name(name_) {}
   static std::string first_mon(const std::string& mon_list) {
     return mon_list.substr(0, mon_list.find(','));
   }
@@ -262,19 +279,20 @@ struct SiftsUnpResidue {
 // We assume that the nearest symmetry mate is connected.
 struct Connection {
   // in write_struct_conn() we assume that Unknown is at the end
-  enum Type { Covale=0, Disulf, Hydrog, MetalC, Unknown };
+  enum Type : unsigned char { Covale=0, Disulf, Hydrog, MetalC, Unknown };
   std::string name;
   std::string link_id;  // _struct_conn.ccp4_link_id (== _chem_link.id)
   Type type = Unknown;
   Asu asu = Asu::Any;
   AtomAddress partner1, partner2;
   double reported_distance = 0.0;
+  short reported_sym[4] = {};  // don't rely on it, for internal use only
 };
 
 // Corresponds to CISPEP or _struct_mon_prot_cis
 struct CisPep {
   AtomAddress partner_c, partner_n;
-  std::string model_str;
+  int model_num = 0;
   // mmCIF has (unused by the PDB) tag _struct_mon_prot_cis.label_alt_id
   // that enables defining CIS link per conformation.
   char only_altloc = '\0';
@@ -333,7 +351,7 @@ struct Sheet {
   std::vector<Strand> strands;
 
   Sheet() = default;
-  explicit Sheet(std::string sheet_id) noexcept : name(sheet_id) {}
+  explicit Sheet(const std::string& sheet_id) noexcept : name(sheet_id) {}
 };
 
 
@@ -349,7 +367,7 @@ struct Assembly {
     std::vector<std::string> subchains;
     std::vector<Operator> operators;
   };
-  enum class SpecialKind {
+  enum class SpecialKind : unsigned char {
     NA, CompleteIcosahedral, RepresentativeHelical, CompletePoint
   };
   std::string name;

@@ -130,24 +130,46 @@ using Miller = std::array<int, 3>;
 
 struct MillerHash {
   std::size_t operator()(const Miller& hkl) const noexcept {
-    return std::size_t((hkl[0] * 1024 + hkl[1]) * 1024 + hkl[2]);
+    return std::size_t((hkl[0] * 1024 + hkl[1]) * 1024 + hkl[2]);  // NOLINT misplaced cast
+  }
+};
+
+struct UnitCellParameters {
+  double a = 1.0, b = 1.0, c = 1.0;
+  double alpha = 90.0, beta = 90.0, gamma = 90.0;
+
+  UnitCellParameters() = default;
+  explicit UnitCellParameters(const double (&par)[6]) {
+    a = par[0]; b = par[1]; c = par[2]; alpha = par[3]; beta = par[4]; gamma = par[5];
+  }
+  explicit UnitCellParameters(const std::array<double,6>& par) {
+    a = par[0]; b = par[1]; c = par[2]; alpha = par[3]; beta = par[4]; gamma = par[5];
+  }
+
+  bool operator==(const UnitCellParameters& o) const {
+    return a == o.a && b == o.b && c == o.c &&
+           alpha == o.alpha && beta == o.beta && gamma == o.gamma;
+  }
+  bool operator!=(const UnitCellParameters& o) const { return !operator==(o); }
+
+  bool approx(const UnitCellParameters& o, double epsilon) const {
+    auto eq = [&](double x, double y) { return std::fabs(x - y) < epsilon; };
+    return eq(a, o.a) && eq(b, o.b) && eq(c, o.c) &&
+           eq(alpha, o.alpha) && eq(beta, o.beta) && eq(gamma, o.gamma);
   }
 };
 
 /// Unit cell. Contains cell parameters as well as pre-calculated
 /// orthogonalization and fractionalization matrices, volume, and more.
 /// Contains symmetry operations (incl. NCS) if they were set from outside.
-struct UnitCell {
+struct UnitCell : UnitCellParameters {
   UnitCell() = default;
   UnitCell(double a_, double b_, double c_,
            double alpha_, double beta_, double gamma_) {
     set(a_, b_, c_, alpha_, beta_, gamma_);
   }
-  UnitCell(const std::array<double, 6>& v) {
-    set(v[0], v[1], v[2], v[3], v[4], v[5]);
-  }
-  double a = 1.0, b = 1.0, c = 1.0;
-  double alpha = 90.0, beta = 90.0, gamma = 90.0;
+  UnitCell(const std::array<double, 6>& v) { set_from_array(v); }
+
   Transform orth;
   Transform frac;
   double volume = 1.0;
@@ -163,18 +185,6 @@ struct UnitCell {
   // entries in the PDB has incorrectly set unit cell or fract. matrix,
   // that is why we check both.
   bool is_crystal() const { return a != 1.0 && frac.mat[0][0] != 1.0; }
-
-  bool operator==(const UnitCell& o) const {
-    return a == o.a && b == o.b && c == o.c &&
-           alpha == o.alpha && beta == o.beta && gamma == o.gamma;
-  }
-  bool operator!=(const UnitCell& o) const { return !operator==(o); }
-
-  bool approx(const UnitCell& o, double epsilon) const {
-    auto eq = [&](double x, double y) { return std::fabs(x - y) < epsilon; };
-    return eq(a, o.a) && eq(b, o.b) && eq(c, o.c) &&
-           eq(alpha, o.alpha) && eq(beta, o.beta) && eq(gamma, o.gamma);
-  }
 
   // compare lengths using relative tolerance rel, angles using tolerance deg
   bool is_similar(const UnitCell& o, double rel, double deg) const {
@@ -291,6 +301,12 @@ struct UnitCell {
     calculate_properties();
   }
 
+  void set_from_parameters(const UnitCellParameters& p) {
+    set(p.a, p.b, p.c, p.alpha, p.beta, p.gamma);
+  }
+
+  void set_from_array(const std::array<double,6>& v) { set(v[0], v[1], v[2], v[3], v[4], v[5]); }
+
   void set_from_vectors(const Vec3& va, const Vec3& vb, const Vec3& vc) {
     set(va.length(), vb.length(), vc.length(),
         deg(vb.angle(vc)), deg(vc.angle(va)), deg(va.angle(vb)));
@@ -316,7 +332,7 @@ struct UnitCell {
     return changed_basis_backward(op.inverse(), set_images);
   }
 
-  bool is_compatible_with_groupops(const GroupOps& gops, double eps=1e-3) {
+  bool is_compatible_with_groupops(const GroupOps& gops, double eps=1e-3) const {
     std::array<double,6> metric = metric_tensor().elements_voigt();
     for (const Op& op : gops.sym_ops) {
       Mat33 m = orth.mat.multiply(rot_as_mat33(op));
@@ -331,7 +347,7 @@ struct UnitCell {
     return true;
   }
 
-  bool is_compatible_with_spacegroup(const SpaceGroup* sg, double eps=1e-3) {
+  bool is_compatible_with_spacegroup(const SpaceGroup* sg, double eps=1e-3) const {
     return sg ? is_compatible_with_groupops(sg->operations(), eps) : false;
   }
 
@@ -407,9 +423,11 @@ struct UnitCell {
     return r;
   }
 
+  Transform orthogonalize_transform(const FTransform& ftr) const {
+    return orth.combine(ftr.combine(frac));
+  }
   Transform op_as_transform(const Op& op) const {
-    Transform frac_tr{rot_as_mat33(op), tran_as_vec3(op)};
-    return orth.combine(frac_tr.combine(frac));
+    return orthogonalize_transform(Transform{rot_as_mat33(op), tran_as_vec3(op)});
   }
 
   double distance_sq(const Fractional& pos1, const Fractional& pos2) const {
@@ -476,7 +494,7 @@ struct UnitCell {
   }
 
   NearestImage find_nearest_pbc_image(const Fractional& fref, Fractional fpos,
-                                      int image_idx) const {
+                                      int image_idx=0) const {
     NearestImage sym_image;
     sym_image.dist_sq = INFINITY;
     sym_image.sym_idx = image_idx;
@@ -485,8 +503,24 @@ struct UnitCell {
     return sym_image;
   }
   NearestImage find_nearest_pbc_image(const Position& ref, const Position& pos,
-                                      int image_idx) const {
+                                      int image_idx=0) const {
     return find_nearest_pbc_image(fractionalize(ref), fractionalize(pos), image_idx);
+  }
+
+  std::vector<NearestImage> find_nearest_pbc_images(const Fractional& fref, double dist,
+                                                    const Fractional& fpos, int image_idx) const {
+    std::vector<NearestImage> results;
+    NearestImage im = find_nearest_pbc_image(fref, fpos, image_idx);
+    int sh[3] = {im.pbc_shift[0], im.pbc_shift[1], im.pbc_shift[2]};
+    for (im.pbc_shift[0] = sh[0]-1; im.pbc_shift[0] <= sh[0]+1; ++im.pbc_shift[0])
+      for (im.pbc_shift[1] = sh[1]-1; im.pbc_shift[1] <= sh[1]+1; ++im.pbc_shift[1])
+        for (im.pbc_shift[2] = sh[2]-1; im.pbc_shift[2] <= sh[2]+1; ++im.pbc_shift[2]) {
+          Fractional shift(im.pbc_shift[0], im.pbc_shift[1], im.pbc_shift[2]);
+          im.dist_sq = orthogonalize_difference(fpos - fref + shift).length_sq();
+          if (im.dist_sq <= sq(dist))
+            results.push_back(im);
+        }
+    return results;
   }
 
   Position orthogonalize_in_pbc(const Position& ref,
@@ -500,6 +534,12 @@ struct UnitCell {
     Fractional fpos = fractionalize(pos);
     apply_transform(fpos, image_idx, inverse);
     return orthogonalize_in_pbc(ref, fpos);
+  }
+
+  // apply NearestImage symmetry to fpos
+  Fractional fract_image(const NearestImage& im, Fractional fpos) {
+    apply_transform(fpos, im.sym_idx, false);
+    return fpos + Fractional(im.pbc_shift[0], im.pbc_shift[1], im.pbc_shift[2]);
   }
 
   /// Counts nearby symmetry mates (0 = none, 3 = 4-fold axis, etc).

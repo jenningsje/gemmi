@@ -3,6 +3,8 @@
 #include <gemmi/monlib.hpp>
 #include <gemmi/calculate.hpp>  // for calculate_chiral_volume
 #include <gemmi/modify.hpp>     // for rename_atom_names
+#include <gemmi/read_cif.hpp>   // for read_cif_gz
+#include <gemmi/numb.hpp>       // for as_number
 
 namespace gemmi {
 
@@ -13,7 +15,7 @@ int ChemLink::calculate_score(const Residue& res1, const Residue* res2,
   int link_score = side1.specificity() + side2.specificity();
 
   auto get_from = [&](const Restraints::AtomId& atomid) {
-    auto aliasing = (atomid.comp != 2 || res2 == nullptr) ? aliasing1 : aliasing2;
+    const auto* aliasing = (atomid.comp != 2 || res2 == nullptr) ? aliasing1 : aliasing2;
     if (aliasing)
       if (const std::string* real_id = aliasing->name_from_alias(atomid.atom))
         return Restraints::AtomId{atomid.comp, *real_id}.get_from(res1, res2, alt, alt2);
@@ -248,7 +250,7 @@ void ChemMod::apply_to(ChemComp& chemcomp, ChemComp::Group alias_group) const {
       if (const std::string* real_id = aliasing.name_from_alias(atom_id))
         return *real_id;
     }
-    return atom_id;
+    return atom_id;  // NOLINT(bugprone-return-const-ref-from-parameter)
   };
   cat_to(chemcomp.name, '+', id);
   // _chem_mod_atom
@@ -440,6 +442,44 @@ void ChemMod::apply_to(ChemComp& chemcomp, ChemComp::Group alias_group) const {
     }
 }
 
+void EnerLib::read(const cif::Document& doc) {
+  cif::Block& block = const_cast<cif::Block&>(doc.blocks[0]);
+  for (const auto& row : block.find("_lib_atom.",
+                  {"type", "hb_type", "vdw_radius", "vdwh_radius",
+                   "ion_radius", "element", "valency", "sp"}))
+    atoms.emplace(row[0], Atom{Element(row[5]), row[1][0], cif::as_number(row[2]),
+                               cif::as_number(row[3]), cif::as_number(row[4]),
+                               cif::as_int(row[6], -1), cif::as_int(row[7], -1)});
+  for (const auto& row : block.find("_lib_bond.",
+                  {"atom_type_1", "atom_type_2", "type", "length", "value_esd"}))
+    bonds.emplace(row.str(0), Bond{row.str(1), bond_type_from_string(row[2]),
+                               cif::as_number(row[3]), cif::as_number(row[4])});
+}
+
+std::string MonLib::relative_monomer_path(const std::string& code) {
+  std::string path;
+  if (!code.empty()) {
+    path += lower(code[0]);
+    path += '/';  // works also on Windows
+    path += code;
+    // On Windows several names are reserved (CON, PRN, AUX, ...), see
+    // https://docs.microsoft.com/en-us/windows/win32/fileio/naming-a-file
+    // The workaround in CCP4 monomer library is to use CON_CON.cif, etc.
+    if (code.size() == 3)
+      switch (ialpha3_id(code.c_str())) {
+        case ialpha3_id("AUX"):
+        case ialpha3_id("COM"):
+        case ialpha3_id("CON"):
+        case ialpha3_id("LPT"):
+        case ialpha3_id("PRN"):
+          path += '_';
+          path += code;
+      }
+    path += ".cif";
+  }
+  return path;
+}
+
 void MonLib::read_monomer_doc(const cif::Document& doc) {
   // ChemComp
   if (const cif::Block* block = doc.find_block("comp_list"))
@@ -484,6 +524,47 @@ double find_radius(const EnerLib& ener_lib, const std::string& chemtype,
 
 } // anonymous namespace
 
+void MonLib::read_monomer_cif(const std::string& path_) {
+  read_monomer_doc(read_cif_gz(path_));
+}
+
+bool MonLib::read_monomer_lib(const std::string& monomer_dir_,
+                              const std::vector<std::string>& resnames,
+                              const Logger& logger) {
+  if (monomer_dir_.empty())
+    fail("read_monomer_lib: monomer_dir not specified.");
+  set_monomer_dir(monomer_dir_);
+
+  // Only recent versions of CCP4 Monomer Library have links_and_mods.cif
+  try {
+    read_monomer_cif(monomer_dir + "links_and_mods.cif");
+  } catch (std::system_error&) {
+    read_monomer_cif(monomer_dir + "list/mon_lib_list.cif");
+  }
+  ener_lib.read(read_cif_gz(monomer_dir + "ener_lib.cif"));
+
+  bool ok = true;
+  for (const std::string& name : resnames) {
+    if (monomers.find(name) != monomers.end())
+      continue;
+    try {
+      const cif::Document& doc = read_cif_gz(path(name));
+      read_monomer_doc(doc);
+    } catch (std::system_error& err) {
+      if (err.code().value() == ENOENT)
+        logger.mesg("Monomer not in the library: ", name, '.');
+      else
+        logger.mesg("Failed to read ", name, ": ", err.what(), '.');
+      ok = false;
+    } catch (std::runtime_error& err) {
+      logger.mesg("Failed to read ", name, ": ", err.what(), '.');
+      ok = false;
+    }
+  }
+  return ok;
+}
+
+
 double MonLib::find_ideal_distance(const const_CRA& cra1, const const_CRA& cra2) const {
   std::string types[2] = {cra1.atom->element.uname(),
                           cra2.atom->element.uname()};
@@ -516,10 +597,7 @@ double MonLib::find_ideal_distance(const const_CRA& cra1, const const_CRA& cra2)
   return r[0] + r[1];
 }
 
-// Returns a multi-line message that can be shown to the user.
-// When we have a logging mechanism, the return type will be void.
-std::string MonLib::update_old_atom_names(Structure& st) const {
-  std::string msg;
+void MonLib::update_old_atom_names(Structure& st, const Logger& logger) const {
   for (const auto& it : monomers)
     // monomers should have only monomers needed for this structure.
     // Few of them (usually none or one) have old names defined.
@@ -539,18 +617,17 @@ std::string MonLib::update_old_atom_names(Structure& st) const {
               }
             }
       if (old_vs_new > 0) {
-        cat_to(msg, "Updating atom names in ", resname, ':');
+        std::string msg = cat("Updating atom names in ", resname, ':');
         std::map<std::string, std::string> mapping;
         for (const ChemComp::Atom& a : cc.atoms)
           if (!a.old_id.empty() && a.old_id != a.id) {
             mapping.emplace(a.old_id, a.id);
             cat_to(msg, ' ', a.old_id, "->", a.id);
           }
-        msg += '\n';
+        logger.mesg(msg);
         rename_atom_names(st, resname, mapping);
       }
     }
-  return msg;
 }
 
 } // namespace gemmi

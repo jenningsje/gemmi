@@ -4,8 +4,6 @@
 
 #include <cstdio>
 #include <cstring>  // for strpbrk
-#include <algorithm>
-#include <iostream>  // for cerr
 #include <gemmi/mtz.hpp>
 #include <gemmi/gz.hpp>       // for MaybeGzipped
 #include <gemmi/version.hpp>  // for GEMMI_VERSION
@@ -56,23 +54,18 @@ int GEMMI_MAIN(int argc, char **argv) {
     gemmi::Op op;
     if (p.options[Hkl]) {
       std::string hkl_arg = p.options[Hkl].arg;
-      op = gemmi::parse_triplet(hkl_arg);
-      if (std::strpbrk(hkl_arg.c_str(), "xyzabcXYZABC"))
-        gemmi::fail("specify OP in terms of h, k and l");
-      if (op.tran != gemmi::Op::Tran{{0, 0, 0}})
-        gemmi::fail("reindexing operator should not have a translation");
+      op = gemmi::parse_triplet(hkl_arg, ' ');
       gemmi::cat_to(from_line, " with [", hkl_arg, ']');
     }
 
     gemmi::Mtz mtz;
-    if (verbose) {
+    if (verbose)
       fprintf(stderr, "Reading %s ...\n", input_path);
-      mtz.warnings = &std::cerr;
-    }
+    mtz.logger.callback = &gemmi::Logger::to_stderr;
     mtz.read_input(gemmi::MaybeGzipped(input_path), true);
 
     if (p.options[Hkl])
-      mtz.reindex(op, &std::cerr);
+      mtz.reindex(op);
 
     if (mtz.is_merged()) {
       bool tnt_asu = false;

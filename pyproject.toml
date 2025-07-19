@@ -1,18 +1,22 @@
 [build-system]
-requires = ["scikit-build-core~=0.8.0", "pybind11>=2.6.2",
-            "pybind11-stubgen~=2.4.2", "numpy"]
+requires = [
+    "scikit-build-core",
+    "nanobind >=2.4",
+    "typing-extensions >=4.0; python_version < '3.11'"
+]
 build-backend = "scikit_build_core.build"
 
 # https://packaging.python.org/en/latest/specifications/declaring-project-metadata/
 [project]
 name = "gemmi"
 dynamic = ["version"]
-requires-python = ">=3.7"
+requires-python = ">=3.8"
 description="library for structural biology"
 readme = "README.md"
 authors = [
   { name = "Marcin Wojdyr", email = "wojdyr@gmail.com" },
 ]
+urls.homepage = "https://github.com/project-gemmi/gemmi"
 urls.repository = "https://github.com/project-gemmi/gemmi"
 license = {text = "MPL-2.0"}  # or, at your option, LGPL-3.0
 keywords = ["structural bioinformatics", "structural biology",
@@ -31,7 +35,7 @@ classifiers = [
 
 [tool.scikit-build]
 #build-dir = "/tmp/gemmi_build2/{wheel_tag}"
-experimental = true  # needed for install-dir
+experimental = true  # needed for install-dir starting with '/'
 wheel.install-dir = "/data"
 wheel.expand-macos-universal-tags = true  # not sure if this is useful
 wheel.packages = []
@@ -53,16 +57,20 @@ sdist.include = [
   "prog/*.h*",
   "python/*.cpp",
   "python/*.h*",
+  "python/stubs.pat",
+  "python/gemmi/__init__.py",
+  "python/gemmi/fetch.py",
   "third_party/README",
   "third_party/*.h",
   "third_party/zlib/*",
   "tests/*",
   "tools/gemmi-config.cmake.in",
+  "constraints.txt",  # This won't fail if the file doesn't exist
   "!__pycache__",
   "!*.pyc"
 ]
 cmake.build-type = "Release"
-cmake.verbose = true
+build.verbose = true
 [tool.scikit-build.cmake.define]
 USE_PYTHON = "ON"
 GENERATE_STUBS = "ON"
@@ -78,19 +86,23 @@ addopts = ["-ra", "-q"]
 testpaths = ["tests"]
 
 [tool.codespell]
-skip = 'third_party,*.pdb,*.crd,*.cif,*.mmcif,*.ent,*.log*,*.dic,*.idx,tags,*.bak,docs/_build,tests/mmcif_pdbx_v50_frag.dic,docs/*-help.txt'
+skip = 'third_party,*.pdb,*.crd,*.cif,*.mmcif,*.ent,*.log*,*.dic,*.idx,tags,*.bak,docs/_build,tests/mmcif_pdbx_v50_frag.dic,docs/*-help.txt,wasm/node_modules'
 ignore-words-list = 'inout,fo,fom,te,nd,ser,unx,ket,acn,readd,conect'
 
 [tool.cibuildwheel]
 # increase pip debugging output
 build-verbosity = 1
 test-command = "python -m unittest discover -v -s {project}/tests/"
+
 [tool.cibuildwheel.environment]
 SKBUILD_CMAKE_ARGS = '-DBUILD_GEMMI_PROGRAM=OFF;-DINSTALL_DEV_FILES=OFF;-DBUILD_SHARED_LIBS=OFF;-DFETCH_ZLIB_NG=ON'
+# Needed for full C++17 support on macOS
+MACOSX_DEPLOYMENT_TARGET = "10.14"
 
 # https://cibuildwheel.readthedocs.io/en/stable/faq/#macos-building-cpython-38-wheels-on-arm64
 [[tool.cibuildwheel.overrides]]
 select = "cp38-macosx_arm64"
+inherit.environment = "append"  # inherit MACOSX_DEPLOYMENT_TARGET
 environment.SKBUILD_CMAKE_ARGS = '-DBUILD_GEMMI_PROGRAM=OFF;-DINSTALL_DEV_FILES=OFF;-DBUILD_SHARED_LIBS=OFF;-DFETCH_ZLIB_NG=ON;-DGENERATE_STUBS=OFF'
 
 [tool.pylint]
@@ -105,3 +117,6 @@ exceptions.overgeneral-exceptions = ["builtins.BaseException"]
   "duplicate-code", "import-outside-toplevel", "unspecified-encoding",
   "consider-using-f-string"
 ]
+
+[tool.ty]
+environment.extra-paths = ["build/py/gemmi"]

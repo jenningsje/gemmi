@@ -5,13 +5,14 @@
 #ifndef GEMMI_FILEUTIL_HPP_
 #define GEMMI_FILEUTIL_HPP_
 
+#include <cassert>
 #include <cstdio>    // for FILE, fopen, fclose
 #include <cstdint>
-#include <cstring>   // strlen
+#include <cstdlib>   // for malloc, realloc
+#include <cstring>   // for strlen
 #include <initializer_list>
 #include <memory>    // for unique_ptr
 #include "fail.hpp"  // for sys_fail
-#include "input.hpp"  // for CharArray
 
 #if defined(_WIN32) && !defined(GEMMI_USE_FOPEN)
 #include "utf.hpp"
@@ -34,7 +35,17 @@ inline std::string path_basename(const std::string& path,
 }
 
 // file operations
-typedef std::unique_ptr<std::FILE, decltype(&std::fclose)> fileptr_t;
+
+/// deleter for fileptr_t
+struct needs_fclose {
+  bool use_fclose;
+  void operator()(std::FILE* f) const noexcept {
+    if (use_fclose)
+      std::fclose(f);
+  }
+};
+
+typedef std::unique_ptr<std::FILE, needs_fclose> fileptr_t;
 
 inline fileptr_t file_open(const char* path, const char* mode) {
   std::FILE* file;
@@ -47,14 +58,14 @@ inline fileptr_t file_open(const char* path, const char* mode) {
 #endif
     sys_fail(std::string("Failed to open ") + path +
              (*mode == 'w' ? " for writing" : ""));
-  return fileptr_t(file, &std::fclose);
+  return fileptr_t(file, needs_fclose{true});
 }
 
 // helper function for treating "-" as stdin or stdout
 inline fileptr_t file_open_or(const char* path, const char* mode,
                               std::FILE* dash_stream) {
   if (path[0] == '-' && path[1] == '\0')
-    return fileptr_t(dash_stream, [](std::FILE*) { return 0; });
+    return fileptr_t(dash_stream, needs_fclose{false});
   return file_open(path, mode);
 }
 
@@ -94,7 +105,38 @@ inline void swap_eight_bytes(void* start) {
   std::swap(bytes[3], bytes[4]);
 }
 
-// reading file into a memory buffer
+
+class CharArray {
+  std::unique_ptr<char, decltype(&std::free)> ptr_;
+  size_t size_;
+public:
+  CharArray() : ptr_(nullptr, &std::free), size_(0) {}
+  explicit CharArray(size_t n) : ptr_((char*)std::malloc(n), &std::free), size_(n) {}
+  explicit operator bool() const { return (bool)ptr_; }
+  char* data() { return ptr_.get(); }
+  const char* data() const { return ptr_.get(); }
+  size_t size() const { return size_; }
+  void set_size(size_t n) { size_ = n; }
+
+  void resize(size_t n) {
+    char* new_ptr = (char*) std::realloc(ptr_.get(), n);
+    if (!new_ptr && n != 0)
+      fail("Out of memory.");
+    (void) ptr_.release();  // NOLINT(bugprone-unused-return-value)
+    ptr_.reset(new_ptr);
+    size_ = n;
+  }
+
+  // Remove first n bytes making space for more text at the returned position.
+  char* roll(size_t n) {
+    assert(n <= size());
+    std::memmove(data(), data() + n, n);
+    return data() + n;
+  }
+};
+
+
+/// reading file into a memory buffer (optimized: uses fseek to determine file size)
 inline CharArray read_file_into_buffer(const std::string& path) {
   fileptr_t f = file_open(path.c_str(), "rb");
   size_t size = file_size(f.get(), path);
@@ -120,10 +162,10 @@ inline CharArray read_stdin_into_buffer() {
 
 template<typename T>
 inline CharArray read_into_buffer(T&& input) {
-  if (input.is_stdin())
-    return read_stdin_into_buffer();
   if (input.is_compressed())
     return input.uncompress_into_buffer();
+  if (input.is_stdin())
+    return read_stdin_into_buffer();
   return read_file_into_buffer(input.path());
 }
 

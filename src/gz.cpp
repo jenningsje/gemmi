@@ -30,13 +30,17 @@ const char* const zlib_description =
 // In particular, if the return values is >= 4GiB - it's only a guess.
 size_t estimate_uncompressed_size(const std::string& path) {
   fileptr_t f = file_open(path.c_str(), "rb");
+  unsigned char buf[4];
+  if (std::fread(buf, 1, 2, f.get()) != 2)
+    sys_fail("Failed to read: " + path);
+  if (buf[0] != 0x1f || buf[1] != 0x8b)
+    fail("File not in the gzip format: " + path);
   if (std::fseek(f.get(), -4, SEEK_END) != 0)
     sys_fail("fseek() failed (empty file?): " + path);
   long pos = std::ftell(f.get());
   if (pos <= 0)
     sys_fail("ftell() failed on " + path);
   size_t gzipped_size = pos + 4;
-  unsigned char buf[4];
   if (std::fread(buf, 1, 4, f.get()) != 4)
     sys_fail("Failed to read last 4 bytes of: " + path);
   unsigned orig_size = (buf[3] << 24) | (buf[2] << 16) | (buf[1] << 8) | buf[0];
@@ -53,7 +57,7 @@ size_t estimate_uncompressed_size(const std::string& path) {
   return orig_size;
 }
 
-size_t big_gzread(gzFile file, void* buf, size_t len) {
+static size_t big_gzread(gzFile file, void* buf, size_t len) {
 #if USE_ZLIB_NG
   return GG(gzfread)(buf, 1, len, file);
 #else
@@ -82,6 +86,30 @@ int GzStream::getc() {
 
 bool GzStream::read(void* buf, size_t len) {
   return big_gzread((gzFile)f, buf, len) == len;
+}
+
+bool GzStream::skip(size_t n) {
+  return GG(gzseek)((gzFile)f, n, SEEK_CUR) != -1;
+}
+
+long GzStream::tell() {
+  return GG(gztell)((gzFile)f);
+}
+
+std::string GzStream::read_rest() {
+    std::string retval;
+    int c = getc();
+    if (c != EOF) {
+      retval += (char)c;
+      char buf[512];
+      for (;;) {
+        size_t n = big_gzread((gzFile)f, buf,  sizeof(buf));
+        retval.append(buf, n);
+        if (n != sizeof(buf))
+          break;
+      }
+    }
+    return retval;
 }
 
 
@@ -145,15 +173,17 @@ CharArray MaybeGzipped::uncompress_into_buffer(size_t limit) {
   return mem;
 }
 
-GzStream MaybeGzipped::get_uncompressing_stream() {
-  assert(is_compressed());
-  file_ = GG(gzopen)(path().c_str(), "rb");
-  if (!file_)
-    sys_fail("Failed to gzopen " + path());
+std::unique_ptr<AnyStream> MaybeGzipped::create_stream() {
+  if (is_compressed()) {
+    file_ = GG(gzopen)(path().c_str(), "rb");
+    if (!file_)
+      sys_fail("Failed to gzopen " + path());
 #if ZLIB_VERNUM >= 0x1235
-  GG(gzbuffer)((gzFile)file_, 64*1024);
+    GG(gzbuffer)((gzFile)file_, 64*1024);
 #endif
-  return GzStream{file_};
+    return std::unique_ptr<AnyStream>(new GzStream(file_));
+  }
+  return BasicInput::create_stream();
 }
 
 } // namespace gemmi

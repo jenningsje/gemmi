@@ -3,13 +3,13 @@ name: CI
 on: [push, pull_request]
 
 jobs:
-  macos14:
-    name: "macOS 14"
-    runs-on: macos-14
+  macos15:
+    name: "macOS 15"
+    runs-on: macos-15
     if: "!contains(github.event.head_commit.message, '[skip ci]')"
     env:
       SKBUILD_CMAKE_ARGS: "-DEXTRA_WARNINGS=ON;-DFETCH_ZLIB_NG=ON"
-      SKBUILD_CMAKE_TARGETS: "all;check"
+      SKBUILD_BUILD_TARGETS: "all;check"
     steps:
     - uses: actions/checkout@v4
     - name: Build wheel and install
@@ -22,20 +22,23 @@ jobs:
     - name: Python Tests
       run: |
         source pyenv/bin/activate
+        python3 -m pip install sphinx sphinx-inline-tabs
+        # run tests twice: without and with numpy
+        python3 -m unittest discover -s tests/
+        (cd docs && sphinx-build -M doctest . _build -n -E)
+        python3 -m pip install numpy
         python3 -m unittest discover -v -s tests/
-        python3 -m pip install sphinx
-        cd docs
-        sphinx-build -M doctest . _build -n -E
+        (cd docs && sphinx-build -M doctest . _build -n -E)
     - uses: actions/upload-artifact@v4
       with:
-        name: gemmi-macos14
+        name: gemmi-macos15
         path: |
           ./gemmi-*.whl
         retention-days: 14
 
-  macos11:
-    name: "macOS 11 (w/o python)"
-    runs-on: macos-11
+  macos13:
+    name: "macOS 13 (w/o python)"
+    runs-on: macos-13
     if: "!contains(github.event.head_commit.message, '[skip ci]')"
     steps:
     - uses: actions/checkout@v4
@@ -46,7 +49,7 @@ jobs:
       shell: bash
       run: |
         cmake --version
-        cmake $GITHUB_WORKSPACE -DCMAKE_BUILD_TYPE=MinSizeRel -DBUILD_SHARED_LIBS=OFF
+        cmake $GITHUB_WORKSPACE -DCMAKE_BUILD_TYPE=MinSizeRel -DBUILD_SHARED_LIBS=OFF -DCMAKE_CXX_STANDARD=14
         cmake --build . -j3
         cmake --build . --target check -j3
     - name: Install
@@ -59,7 +62,7 @@ jobs:
         python3 tests/test_prog.py
     - uses: actions/upload-artifact@v4
       with:
-        name: gemmi-macos11
+        name: gemmi-macos13
         path: |
           ${{runner.workspace}}/build/gemmi
           ${{runner.workspace}}/build/libgemmi*
@@ -75,7 +78,8 @@ jobs:
     - uses: actions/checkout@v4
     - uses: actions/setup-python@v5
       with:
-        python-version: "3.10"
+        python-version: "3.13"
+        allow-prereleases: true
     - name: build and test
       run: |
         python -m pip install -v .
@@ -84,7 +88,33 @@ jobs:
     - name: run doctest
       working-directory: ./docs
       run: |
-        python -m pip install sphinx
+        python -m pip install sphinx sphinx-inline-tabs
+        sphinx-build -M doctest . _build -n -E
+
+  ubuntu2404:
+    name: "Ubuntu 24.04 arm64"
+    runs-on: ubuntu-24.04-arm
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    steps:
+    - uses: actions/checkout@v4
+    - name: apt-get
+      run: |
+        sudo apt-get update
+        sudo apt-get install python3-full g++ gfortran
+    - name: build and test
+      run: |
+        g++ --version
+        python3 -m venv pyenv
+        source pyenv/bin/activate
+        export SKBUILD_CMAKE_ARGS='-DFETCH_ZLIB_NG=ON;-DCMAKE_BUILD_TYPE=None'
+        python3 -m pip install -v .
+        python3 -m pip install numpy
+        python3 -m unittest discover -v -s tests/
+    - name: run doctest
+      run: |
+        source pyenv/bin/activate
+        python3 -m pip install -U sphinx sphinx-inline-tabs
+        cd docs
         sphinx-build -M doctest . _build -n -E
 
   ubuntu2204:
@@ -95,15 +125,13 @@ jobs:
     - uses: actions/checkout@v4
     - name: apt-get
       run: |
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tzdata
         sudo apt-get update
         sudo apt-get install libz-dev python3-pip g++ gfortran python3-numpy
-    - name: install pybind11
+        sudo python3 -m pip install -U typing_extensions sphinx sphinx-inline-tabs
+    - name: install nanobind
       run: |
-        git clone --depth=1 https://github.com/pybind/pybind11.git
-        #cd pybind11
-        #cmake . -Wno-dev -DPYTHON_EXECUTABLE=/usr/bin/python3 -DPYBIND11_TEST=OFF
-        #make
-        #sudo make install
+        git clone --recursive --depth=1 https://github.com/wjakob/nanobind.git
     - name: build and test
       run: |
         g++ --version
@@ -115,27 +143,64 @@ jobs:
         make -j2 check
         sudo make install
         python3 -m unittest discover -v -s ../tests/
-        strip --strip-unneeded ./gemmi ./gemmi.cpython*.so
+        strip --strip-unneeded ./gemmi ./py/gemmi/gemmi_ext.cpython*.so
     - name: run doctest
       run: |
-        sudo python3 -m pip install -U sphinx
         export PYTHONPATH=$PWD/build
+        cd docs
+        sphinx-build -M doctest . _build -n -E
+
+  ubuntu2204_clang8:
+    name: "Ubuntu 22.04 with Clang 13"
+    runs-on: ubuntu-22.04
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    env:
+      CC: clang-13
+      CXX: clang++-13
+      SKBUILD_CMAKE_ARGS: "-DEXTRA_WARNINGS=ON;-DSTANDALONE_PYTHON_MODULE=OFF"
+      SKBUILD_BUILD_TARGETS: "all;check"
+    steps:
+    - name: apt-get
+      run: |
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tzdata
+        sudo apt-get update
+        sudo apt-get install python3-pip python3-numpy
+    - name: install nanobind
+      run: |
+        git clone --recursive --depth=1 https://github.com/wjakob/nanobind.git
+    - uses: actions/checkout@v4
+    - name: build from sdist
+      run: |
+        $CXX --version
+        echo >constraints.txt <<EOF
+        scikit-build-core==0.10.7
+        EOF
+        python3 -m pip install build scikit-build-core==0.10.7 nanobind
+        python3 -m build --sdist
+        python3 -m pip install -v dist/gemmi-*.tar.gz -c constraints.txt --no-build-isolation
+        python3 -m unittest discover -v -s tests/
+    - name: run doctest
+      run: |
+        python3 -m pip install -U sphinx sphinx-inline-tabs
         cd docs
         sphinx-build -M doctest . _build -n -E
 
   ubuntu2004:
     name: "Ubuntu 20.04"
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
+    container: ubuntu:20.04
     if: "!contains(github.event.head_commit.message, '[skip ci]')"
     steps:
     - uses: actions/checkout@v4
     - name: apt-get
       run: |
-        sudo apt-get update
-        sudo apt-get install libz-dev python3-pip g++ gfortran python3-numpy valgrind
-    - name: install pybind11
+        export DEBIAN_FRONTEND=noninteractive
+        ln -fs /usr/share/zoneinfo/UTC /etc/localtime
+        apt-get update
+        apt-get install -y libz-dev python3-pip g++ gfortran python3-numpy valgrind cmake
+    - name: install nanobind
       run: |
-        python3 -m pip install pybind11
+        python3 -m pip install nanobind typing_extensions sphinx sphinx-inline-tabs
     - name: build and test
       run: |
         g++ --version
@@ -145,43 +210,15 @@ jobs:
         cmake .. -DCMAKE_BUILD_TYPE=Debug -DUSE_PYTHON=1 -DPython_EXECUTABLE=python3 -DBUILD_SHARED_LIBS=OFF
         cmake --build . --config Debug -j2
         cmake --build . --config Debug --target check -j2
-        sudo cmake --install . --config Debug
+        cmake --install . --config Debug
         cd ..
         python3 -m unittest discover -v -s tests/
     - name: run doctest
       run: |
-        sudo pip3 install -U sphinx
         cd docs
         sphinx-build -M doctest . _build -n -E
     - name: run tests under valgrind
       run: PYTHONMALLOC=malloc valgrind python3 -m unittest discover -v -s tests/
-
-  ubuntu2004_clang6:
-    name: "Ubuntu 20.04 with Clang 6.0"
-    runs-on: ubuntu-20.04
-    if: "!contains(github.event.head_commit.message, '[skip ci]')"
-    env:
-      CC: clang-6.0
-      CXX: clang++-6.0
-      SKBUILD_CMAKE_ARGS: "-DCMAKE_CXX_STANDARD=11;-DEXTRA_WARNINGS=ON;-DSTANDALONE_PYTHON_MODULE=OFF"
-      SKBUILD_CMAKE_TARGETS: "all;check"
-    steps:
-    - uses: actions/checkout@v4
-    - run: sudo apt-get install clang-6.0 libz-dev python3-pip python3-numpy
-    - name: install pybind11
-      run: |
-        sudo /usr/bin/python3 -m pip install "pybind11[global]" build
-    - name: build and test
-      run: |
-        $CXX --version
-        python3 -m build --sdist
-        python3 -m pip install -v dist/gemmi-*.tar.gz
-        python3 -m unittest discover -v -s tests/
-    - name: run doctest
-      run: |
-        python3 -m pip install -U sphinx
-        cd docs
-        sphinx-build -M doctest . _build -n -E
 
   almalinux:
     runs-on: ubuntu-latest
@@ -194,16 +231,16 @@ jobs:
       run: |
         dnf update -y
         dnf install -y gcc-c++ cmake make git python38-devel python38-pip
-        python3.8 -m pip install -U numpy
+        python3.8 -m pip install -U numpy typing_extensions sphinx sphinx-inline-tabs
         g++ --version
         python3.8 --version
         cmake --version
         type python3.8
-    - name: install pybind11
+    - name: install nanobind
       run: |
-        git clone --branch stable --depth=1 https://github.com/pybind/pybind11.git
-        cd pybind11
-        cmake . -Wno-dev -DPYTHON_EXECUTABLE=/usr/bin/python3.8 -DPYBIND11_TEST=OFF
+        git clone --recursive --depth=1 https://github.com/wjakob/nanobind.git
+        cd nanobind
+        cmake . -Wno-dev -DPYTHON_EXECUTABLE=/usr/bin/python3.8 -DNB_TEST=OFF
         make
         make install
     - name: build and test
@@ -214,10 +251,9 @@ jobs:
         make -j2 check
         make install
         python3.8 -m unittest discover -v -s ./tests/
-        strip --strip-unneeded ./gemmi ./gemmi.cpython*.so
+        strip --strip-unneeded ./gemmi ./py/gemmi/gemmi_ext.cpython*.so
     - name: run doctest
       run: |
-        python3.8 -m pip install -U sphinx
         cd docs
         PYTHONPATH=.. sphinx-build -M doctest . _build -n -E
     - uses: actions/upload-artifact@v4
@@ -226,5 +262,5 @@ jobs:
         path: |
           ./gemmi
           ./libgemmi_cpp.so
-          ./gemmi.cpython*.so
+          ./py
         retention-days: 14

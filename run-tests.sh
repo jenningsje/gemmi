@@ -6,7 +6,7 @@
 # PYTHONPATH. Locally, I'm using bash function "gpy" that starts python with
 # gemmi imported ("gpy" for interactive mode, "gpy file.py" for script):
 #   echo "import gemmi" > $HOME/.import-gemmi.py
-#   gpy() { PYTHONPATH=$HOME/gemmi/gemmi/build PYTHONSTARTUP=$HOME/.import-gemmi.py python3 -q "$@"; }
+#   gpy() { PYTHONPATH=$HOME/gemmi/gemmi/build/py PYTHONSTARTUP=$HOME/.import-gemmi.py python3 -q "$@"; }
 
 # set up variables
 set -eu
@@ -14,7 +14,7 @@ cd "$(dirname "$0")"
 BUILD_DIR="$(pwd)"
 [ -e build ] && BUILD_DIR="$(pwd)/build"
 if [ -z "${PYTHON-}" ]; then
-    PYTHON=`grep ^PYBIND11_PYTHON_EXECUTABLE_LAST: $BUILD_DIR/CMakeCache.txt | cut -d= -f2`
+    PYTHON=`grep '^_\?Python_EXECUTABLE:' $BUILD_DIR/CMakeCache.txt | cut -d= -f2`
 fi
 
 # Build all, except when we called with an option to avoid full compilation:
@@ -22,34 +22,42 @@ fi
 #  P - only build Python bindings,
 #  n - do not build, only run tests.
 if [ $# = 1 ] && [ $1 = G ]; then
-    (cd $BUILD_DIR && make -j4 gemmi_prog)
+    (cd $BUILD_DIR && make -j$(nproc) gemmi_prog)
     exit
 fi
 if [ $# = 1 ] && [ $1 = P ]; then
-    (cd $BUILD_DIR && make -j4 gemmi_py)
+    (cd $BUILD_DIR && make -j$(nproc) gemmi_py)
+    exit
+fi
+if [ $# = 1 ] && [ $1 = doctest ]; then
+    (cd docs && PYTHONPATH=$BUILD_DIR/py $PYTHON -m sphinx -M doctest . _build -q -n)
     exit
 fi
 if [ $# != 0 ] && [ $1 = n ]; then
     shift
 else
-    (cd $BUILD_DIR && make -j4 all check)
-    ./tools/cmp-size.py build/gemmi build/*gemmi*.so
+    (cd $BUILD_DIR && make -j$(nproc) all check)
+    ./tools/cmp-size.py build/gemmi build/libgemmi_cpp.so build/py/gemmi/gemmi_ext*
     ./tools/docs-help.sh
 fi
-(cd docs && make -j4 html SPHINXOPTS="-q -n")
 
 # Run tests and checks.
 if [ $# = 0 ] || [ $1 != i ]; then
-    export PYTHONPATH=$BUILD_DIR
+    export PYTHONPATH=$BUILD_DIR/py
     export PATH="$BUILD_DIR:$PATH"
 fi
 $PYTHON -m unittest discover -s tests
-./tools/header-list.py >docs/headers.rst
+grep :: $BUILD_DIR/py/gemmi/*.pyi ||:
 
 if [ -z "${NO_DOCTEST-}" ]; then
     # 'make doctest' works only if sphinx-build was installed for python3.
-    (cd docs && make doctest SPHINXOPTS="-q -n -E")
+    #(cd docs && make doctest SPHINXOPTS="-q -n")
+    (cd docs && $PYTHON -m sphinx -M doctest . _build -q -n)
 fi
+
+echo "Building docs (in background)..."
+./tools/header-list.py >docs/headers.rst
+(cd docs && make -j$(nproc) html SPHINXOPTS="-q -n")&
 
 # Usually, we stop here. Below are more extensive checks below that are run
 # before making a release. They are run when this script is called with 'a'
@@ -57,6 +65,7 @@ fi
 [ $# = 0 ] && exit;
 
 flake8 docs/ examples/ tests/ tools/
+mypy --disable-error-code=override --disable-error-code=attr-defined $BUILD_DIR/py/gemmi
 
 # this check is only for pip-installed packages
 if [ $1 = i ]; then
@@ -70,11 +79,6 @@ if [ $1 = x -o $1 = a ]; then
     echo 'Run codespell'
     codespell include src prog python fortran tests examples docs wasm tools ||:
 
-    echo 'Run pybind11-stubgen'
-    pybind11-stubgen --dry-run --exit-code gemmi \
-        --enum-class-locations='Ignore:gemmi.ContactSearch' \
-        --enum-class-locations='.+:gemmi'
-
     echo 'Checking serialize.hpp...'
     $PYTHON tools/check_serialize.py
 fi
@@ -82,15 +86,15 @@ fi
 if [ $1 = m -o $1 = a ]; then
     echo 'Creating, compiling and removing test_mmdb{1,2}.cpp'
     echo 'Example 1: gemmi -> mmdb'
-    cmd="c++ -O -Wall -Wextra -pedantic -Wshadow -Iinclude test_mmdb.cpp \
-        -lmmdb2 -Lbuild -lgemmi_cpp -lz -Wl,-rpath=build -o test_mmdb"
-    awk '/Example 1/,/^}/' include/gemmi/mmdb.hpp > test_mmdb.cpp
-    ${cmd}1
+    cmd="c++ -O -Wall -Wextra -pedantic -Wshadow -Iinclude test_mmdbX.cpp \
+        -lmmdb2 -Lbuild -lgemmi_cpp -lz -Wl,-rpath=build -o test_mmdbX"
+    awk '/Example 1/,/^}/' include/gemmi/mmdb.hpp > test_mmdb1.cpp
+    ${cmd//X/1}
     echo "Converting tests/1orc.pdb to /tmp/example1.pdb"
     ./test_mmdb1 tests/1orc.pdb /tmp/example1.pdb
     echo 'Example 2: mmdb -> gemmi'
-    awk '/Example 2/,/^}/' include/gemmi/mmdb.hpp > test_mmdb.cpp
-    ${cmd}2
+    awk '/Example 2/,/^}/' include/gemmi/mmdb.hpp > test_mmdb2.cpp
+    ${cmd//X/2}
     echo "Converting tests/1orc.pdb to /tmp/example2.pdb"
     ./test_mmdb2 tests/1orc.pdb /tmp/example2.pdb
     rm -f test_mmdb1.cpp test_mmdb2.cpp test_mmdb1 test_mmdb2
@@ -102,7 +106,7 @@ if [ $1 = h -o $1 = a ]; then
     for f in include/gemmi/*.hpp; do
         if [ $f != include/gemmi/mmdb.hpp ]; then
             echo -n .
-            gcc-9 -c -fsyntax-only -Dsmall=.avoid/small $f
+            gcc -c -fsyntax-only -Dsmall=.avoid/small $f
         fi
     done
     echo
@@ -145,10 +149,9 @@ if [ $1 = c -o $1 = a ]; then
 fi
 
 if [ $1 = w -o $1 = a ]; then
-    echo "check if wasm/mtz and project-gemmi/wasm can be built"
+    echo "check if wasm and project-gemmi/wasm can be built"
     [ -z ${EMSDK+x} ] && . $HOME/local/emsdk/emsdk_env.sh
-    (cd wasm/mtz && ./compile.sh)
-    (cd ../wasm/convert && make clean && make)
+    (cd wasm && make clean && make -j$(nproc) && npm run test)
 fi
 
 if [ $1 = M -o $1 = a ]; then

@@ -24,6 +24,8 @@ struct PdbWriteOptions {
   bool numbered_ter = true;     // TER record gets own serial number
   bool ter_ignores_type = false; // put TER after last atom in Chain (even if it's water)
   bool use_linkr = false;       // use non-standard Refmac LINKR record instead of LINK
+  bool use_link_id = false;     // write Link::link_id instead of distanc in th LINK record
+                                // (when link_id) is not empty. Implied by use_linkr.
   bool preserve_serial = false; // use serial numbers from Atom.serial
   // end of snippet for mol.rst
 
@@ -45,10 +47,11 @@ struct PdbWriteOptions {
   }
 };
 
-GEMMI_DLL void write_pdb(const Structure& st, std::ostream& os,
-                         PdbWriteOptions opt=PdbWriteOptions());
-GEMMI_DLL std::string make_pdb_string(const Structure& st,
-                                      PdbWriteOptions opt=PdbWriteOptions());
+/// record type ATOM/HETATM to use for writing given residue
+GEMMI_DLL bool use_hetatm(const Residue& res);
+
+GEMMI_DLL void write_pdb(const Structure& st, std::ostream& os, PdbWriteOptions opt={});
+GEMMI_DLL std::string make_pdb_string(const Structure& st, PdbWriteOptions opt={});
 
 // deprecated
 inline void write_minimal_pdb(const Structure& st, std::ostream& os) {

@@ -1,5 +1,7 @@
 .. highlight:: console
 
+.. _program:
+
 Gemmi program
 #############
 
@@ -17,32 +19,28 @@ use a tool such as `GNU parallel <https://www.gnu.org/software/parallel/>`_::
 
   $ find $PDB_DIR/structures/divided/mmCIF/ -name '*.cif.gz' | parallel gemmi grep _exptl.method
 
+.. _gemmi-validate:
+
 validate
 ========
 
-A CIF validator. Apart from checking the syntax it can check most of the rules
-imposed by DDL1 and DDL2 dictionaries.
+This program validates CIF and mmCIF files. It can:
 
-If you want to validate mmCIF files,
-the current version of the PDBx/mmCIF specification, maintained by the PDB,
-is distributed as one file
-(`mmcif_pdbx_v50.dic <https://mmcif.wwpdb.org/dictionaries/mmcif_pdbx_v50.dic/Index/>`_),
-which can be used to validate all kinds of mmCIF files: coordinate files,
-reflection files, and CCD monomers.
-Note that such validation can spot only certain types of mistakes.
-It won't tell you if the file is appropriate for deposition to the PDB.
-Dictionary-based validation can't even tell if the file contains all
-the necessary tables; it is unaware of what the file represents --
-coordinates, reflection data or something else.
-On the other hand, the mmCIF files deposited to the PDB do not need
-to strictly conform to the PDBx/mmCIF spec.
-Not even the files distributed by the PDB are fully compliant
-(partly because not everything can be expressed in DDL2 syntax;
-usually it's about child-parent relationships;
-PDB's own validator, program CifCheck from
-`mmcif-dict-suite <https://sw-tools.rcsb.org/apps/MMCIF-DICT-SUITE/>`_,
-has a few exceptions hardcoded in C++,
-so that non-conformance is not accidental).
+* check the STAR/CIF syntax (CIF 1.1, not 2)::
+
+    gemmi validate file1.cif file2.cif
+
+* verify rules imposed by DDL1 and DDL2 dictionaries::
+
+    gemmi validate -d mmcif_pdbx_v50.dic -d extension.dic file.mmcif
+
+* and perform a few extra checks for CCP4 monomer files::
+
+    gemmi validate -m $CLIBD_MON/a/AAA.cif
+
+Before validating mmCIF-like files, see :ref:`the notes on DDL2 <ddl2>`.
+The dictionary used for mmCIF files is the first one
+`from here <https://mmcif.wwpdb.org/dictionaries/downloads.html>`_.
 
 .. literalinclude:: validate-help.txt
    :language: console
@@ -261,22 +259,24 @@ to `5moo.cif.gz`. And for convenience, using a PDB code implies
 option `-O`.
 
 The file paths or PDB codes can be read from a file.
-For example, if we want to analyse PDB data deposited in 2016
-we may first make a file that lists all such files::
+For example, if we want to analyze PDB data deposited in 2016,
+we may first create a file that lists all such files::
 
   $ gemmi grep -H -O _pdbx_database_status.recvd_initial_deposition_date $PDB_DIR/structures/divided/mmCIF | \
           grep 2016 >year2016.txt
 
-The 2016.txt file file has lines that start with the filename::
+The year2016.txt file has lines that start with the filename::
 
   /hdd/structures/divided/mmCIF/ww/5ww9.cif.gz:5WW9:2016-12-31
   /hdd/structures/divided/mmCIF/ww/5wwc.cif.gz:5WWC:2016-12-31
 
-and a command such as::
+If we make a list of filenames only::
 
-  $ gemmi grep -f year2016.out _diffrn.ambient_temp
+  $ awk -F: '{print $1}' year2016.txt > year2016_.txt
 
-will grep only the listed cif files.
+we can then use `-f` to grep files from this list::
+
+  $ gemmi grep -f year2016_.txt _diffrn.ambient_temp
 
 Exit status of gemmi-grep has the same meaning as in GNU grep:
 0 if a line is selected, 1 if no lines were selected,
@@ -418,32 +418,73 @@ Conversion between macromolecular coordinate formats: PDB, mmCIF and mmJSON.
 .. literalinclude:: convert-help.txt
    :language: console
 
-The PDB records written by Gemmi are formatted in the same way as in the wwPDB.
-This makes possible to use `diff` to compare a PDB file from wwPDB
-and a file converted by Gemmi from mmCIF. The file from wwPDB will have
-more records, but the diff should still be readable.
+Gemmi formats PDB records in the same way as wwPDB (including
+trailing spaces) to enable file comparison using `diff`.
 
-The option `--expand-ncs` expands strict NCS, defined in
-the `MTRIX` record (PDB) or in the `_struct_ncs_oper` table (mmCIF).
-It is not obvious how to name the new chains that are added.
-We have two options: either new names are generated (`=new`) or
-the chain names are not changed but distinct segment IDs are added (`=dup`).
+CCD files include two sets of coordinates: example model and ideal.
+By default, when converting a CCD component to another format,
+both sets are written as separate models.
+To output only a single model, specify `--from=chemcomp:m` (for model)
+or `--from=chemcomp:i` (for ideal).
 
-The `--sifts-num` option changes sequence IDs to the corresponding sequence
-positions from UniProt. The mapping between PDB and UniProt is based on
+`--expand-ncs`
+--------------
+
+This option expands strict NCS, as defined in the `MTRIX` records (PDB)
+or the `_struct_ncs_oper` table (mmCIF).
+The difficult part is naming the added chains; three options are provided:
+
+* `=dup` -- the chain names remain unchanged, with distinct segment IDs added,
+* `=num` -- the names are appended with numbers to avoid duplication,
+* `=x` -- unused 1- or 2-character names are assigned, supporting
+  up to 62 + 62×62 = 3906 chains and allowing output in the PDB format.
+
+`--sifts-num`
+-------------
+
+This option changes sequence IDs to the corresponding sequence
+positions from UniProt. Residues that don't have UniProt correspondence
+have their sequence numbers increased by an offset of 5000 (like in PDBrenum).
+In rare cases where UniProt positions are around 5000 or higher,
+the offset is increased to 6000 or a larger round number.
+
+Note that the mapping between PDB and UniProt is based on
 SIFTS (not DBREF) :ref:`annotations in mmCIF files <dbref>`.
 Currently, these annotations are present only in the PDB NextGen Archive
-and in PDBe "updated" files.
-Most PDB chains are mapped to a single UniProt entry.
+and in PDBe "updated" files -- `--sifts-num`  works only with these files!
+
+If accession codes (ACs) are specified in this option, only the matching
+UniProt ACs are used, and non-matching chains have their sequence numbers
+increased by an offset.
+
 For chimeric chains that correspond to 2+ UniProt sequences,
-we default to selecting the sequence with more corresponding residues.
-This default can be overridden by explicitly specifying the preferred
+we use the sequence with the most corresponding residues.
+This choice can be overridden by explicitly specifying the preferred
 UniProtKB identifiers (usually just one AC, but it's possible to specify
 multiple comma-separated ACs, in the order of preference).
-To avoid clashes in sequence IDs, and also to indicate which IDs are based
-on UniProt mapping, the non-mapped sequence numbers are increased by
-an offset of 5000 (this default value is inspired by PDBrenum)
-or bigger if necessary (when UniProt positions are that large).
+
+`*` in the argument list (e.g. `--sifts-num=P01234,*`)
+means that all chains with corresponding UniProt entries are renumbered
+to match UniProt positions (but P01234 is preferred for chimeric chains).
+An absent argument (`--sifts-num`) is equivalent to `*` (`--sifts-num=*`).
+
+Chains that don't match the UniProt ACs have their sequence numbers
+bumped by 5000+, similarly to ligands and waters in matching chains.
+To leave the non-matching chains unchanged, add `=` at the end,
+e.g. `--sifts-num=*,=`.
+
+set
+===
+
+Modifies atom positions, isotropic B-factors, and/or occupancies
+in a PDB or mmCIF file. It serves as a partial replacement for CCP4 PDBSET.
+
+Unlike most other gemmi tools, it doesn't parse the entire input file.
+Instead, it reads only what is necessary to locate the relevant numbers
+and replaces them, leaving the rest of the file unchanged.
+
+.. literalinclude:: set-help.txt
+   :language: console
 
 tags
 ====
@@ -546,6 +587,68 @@ Transforms map coefficients from either MTZ or SF mmCIF to CCP4 map.
 The `--sample` option is named after the `GRID SAMPLE` keyword of
 the venerable CCP4 FFT program; its value has the same meaning.
 
+`--check`
+---------
+
+This option is inspired by Ian Tickle's MTZFIX program.
+It checks how the map coefficients were calculated
+by determining relationships between MTZ columns, separately for acentric,
+centric and missing reflections. It works well with MTZ files from BUSTER,
+Refmac and Servalcat, which include map coefficients along with
+scaled *Fobs*, *D.Fc* and the figure-of-merit *m*.
+Here is an example output:
+
+.. code-block:: none
+
+  Columns used in checking map coefficients:
+      for FM (normal map):     FWT        PHWT
+      for FD (difference map): DELFWT     PHDELWT
+      for D.Fc:                FC_ALL     PHIC_ALL
+      for scaled Fo:                FP
+      for figure-of-merit m:        FOM
+      for free flags:               FREE
+  Is FD (DELFWT) set to 0 or NaN for any of 20 FREE flags ... yes, for 0
+   -> free reflections are NOT used for maps
+  Phases PHWT and PHDELWT ...   match (mod 180)
+  Phases PHIC_ALL and PHWT ...   match (mod 180)
+  For all 127888 acentric reflections (excl. missing/unused):
+      FM = 2m.Fo - D.Fc
+      FD = 2(m.Fo - D.Fc) = 2(FM - m.Fo) = FM - D.Fc
+  For all 2486 centric reflections (excl. missing/unused):
+      FM = 2m.Fo - D.Fc
+      FD = 2(m.Fo - D.Fc) = 2(FM - m.Fo) = FM - D.Fc
+  For all 16359 missing/unused reflections:
+      FM = D.Fc
+      FD = 0
+
+If the MTZ file lacks some of these columns (for instance, if only
+unscaled *Fobs* are present), the output is less informative.
+
+Why is this useful at all?
+
+Typically, an MTZ file from refinement has coefficients for two maps:
+
+* a density map, 2\ *mF*:sub:`o`–\ *DF*:sub:`c` , sometimes referred to as
+  2\ *F*:sub:`o`–\ *F*:sub:`c` even if *m* and *D* are used,
+* and a difference map, *mF*:sub:`o`–*DF*:sub:`c` ,
+  sometimes referred to as *F*:sub:`o`–*F*:sub:`c`.
+
+However, the exact formulas vary across implementations:
+
+* For acentric reflections, the difference map may or may not include a factor
+  of 2. In the literature, the formula is actually
+  2(*mF*:sub:`o`–*DF*\ :sub:`c`), not the one given above.
+  In an MTZ file it may not be 2×.
+  (This only affects the map's absolute values -- not that important.)
+* The formulas for centric reflections have been derived as:
+  *mF*:sub:`o` for the density map and *mF*:sub:`o`–*DF*:sub:`c`
+  (without 2×) for the difference map; however, not all programs
+  use these formulas.
+* For reflections without observed data (missing *F*\ :sub:`o`), the density map
+  coefficients are either filled with *DF*:sub:`c` or not.
+* For reflections in a free set, *F*:sub:`o` is either used (to improve map
+  quality) or not (to ensure that the free set is used solely for validation).
+
 map2sf
 ======
 
@@ -554,13 +657,108 @@ Transforms CCP4 map into map coefficients.
 .. literalinclude:: map2sf-help.txt
    :language: console
 
+.. _gemmi-merge:
+
 merge
 =====
 
-Merge intensities from multi-record reflection file.
+Merge intensities from a multi-record reflection file
+or calculate quality metrics for unmerged data.
 
 .. literalinclude:: merge-help.txt
    :language: console
+
+No rejection of observations takes place, apart from ignoring observations
+with non-positive sigma. We may implement rejecting outliers or misfits
+in the future (if there is an interest in it).
+
+MTZ files may store different unit cell parameters for different
+frames (batches). Additionally, they store global and per-dataset cell
+parameters. By default, we use the "global" parameters.
+To use the mean of per-batch parameters instead (like Aimless),
+add `--batch-cell`. Unit cell parameters are needed only to write them
+to the output file and for choosing resolution shells for statistics.
+
+.. _gemmi-merge-metrics:
+
+Quality metrics
+---------------
+
+Here is an example output of the quality metrics::
+
+  $ gemmi merge --stats=10 mdm2_unmerged.mtz
+  In resolution shells:
+    d_max  d_min   #obs  #uniq  #used  Rmerge   Rmeas   Rpim    CC1/2
+   61.902 2.681   16148   4818   4604   0.175   0.208   0.111   0.9450
+    2.681 2.128   16036   4551   4449   0.221   0.261   0.137   0.9246
+    2.128 1.859   15907   4494   4417   0.301   0.354   0.185   0.8733
+    1.859 1.689   15824   4441   4372   0.489   0.577   0.302   0.8163
+    1.689 1.568   14909   4413   4196   0.980   1.163   0.618   0.5520
+    1.568 1.476    9083   4212   2913   1.731   2.208   1.344   0.2296
+    1.476 1.402    5712   3148   1811   3.974   5.222   3.337   0.0568
+    1.402 1.341    3472   2147   1043   6.521   8.750   5.765   0.0361
+    1.341 1.289    1756   1312    413  16.274  22.638  15.676   0.1174
+    1.289 1.245     481    429     52  -6.970  -9.857  -6.970  -0.0984
+
+  Observations (all reflections): 99328
+  Unique reflections: 33965
+  Used refl. (those with multiplicity 2+): 28270
+            Overall    Avg of 10 shells weighted by #used
+  R-merge:  0.2204          1.2299
+  R-meas:   0.2626          1.5896
+  R-pim:    0.1407          0.9882
+  CC1/2:    0.95915         0.67419
+
+R\ :sub:`merge`, R\ :sub:`meas` and R\ :sub:`pim` may use or not use
+σ for weighting. In the 1997 paper that introduced R\ :sub:`meas`,
+`Diederichs & Karplus <https://doi.org/10.1038/nsb0497-269>`_
+define R\ :sub:`meas` (sometimes called R\ :sub:`sym`) as:
+
+.. image:: img/rmerge-1997.png
+    :align: center
+    :scale: 100
+
+Phil Evans, in his CCP4 programs Scala and Aimless,
+and in `the 2006 paper <https://doi.org/10.1107/s0907444905036693>`_,
+uses formula with weighting by 1/σ², as used for merged ⟨I⟩:
+
+.. image:: img/rmerge-2006.png
+    :align: center
+    :scale: 100
+
+This formula is also used by `MRFANA <https://github.com/githubgphl/MRFANA>`_.
+
+A third variant, used by XDS and `iotbx.merging_statistics` from cctbx,
+has the numerator from the latter and the denominator from the former.
+
+Similarly, there are three variants of R\ :sub:`meas` and R\ :sub:`pim`.
+
+Gemmi can calculate all three variants:
+
+* By default (example above), it is compatible with Aimless and MRFANA.
+* With added `U` (e.g. `--stats=10U`) it calculates the original,
+  **u**\ nweighted formulas.
+* With added `X` (e.g. `--stats=10X`) it is compatible with XDS and cctbx.
+
+CC\ :sub:`1/2` is calculated using the σ-τ method, proposed by
+`Assmann et al (2016) <https://doi.org/10.1107/S1600576716005471>`_ in 2016
+and described in detail on
+`this XDSwiki page <https://wiki.uni-konstanz.de/xds/index.php?title=CC1/2>`_.
+
+(NOTE: weighted CC1/2 may not be correct, it will be checked later)
+
+With the `--anom` option, I+ and I- values are treated separately.
+Centric reflections are counted in and treated as I+ (unlike, for instance,
+in MRFANA "within I+/I-" values, which contain only actual I+/I- -- the
+difference is negligible).
+
+Three ways of setting up resolution shells are supported:
+
+* default -- shells with equal volumes (equispaced in d*³),
+* 's' -- shells with increasing volumes (equispaced in d*²),
+* 'e' -- shells with an equal number of observations.
+
+.. _gemmi-ecalc:
 
 ecalc
 =====
@@ -820,6 +1018,14 @@ that atom is assigned one of possible positions and its occupancy is zeroed.
 .. literalinclude:: h-help.txt
    :language: console
 
+(The library function that does a similar job is
+:ref:`prepare_topology <topology>`.)
+
+To test the addition of hydrogen to a single chemical component
+from a monomer library, run::
+
+    gemmi h --format=chemcomp -L+ XYZ.cif output.pdb
+
 mondiff
 =======
 
@@ -1063,6 +1269,8 @@ TBC
 
 .. literalinclude:: wcn-help.txt
    :language: console
+
+.. _gemmi-xds2mtz:
 
 xds2mtz
 =======

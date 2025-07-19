@@ -540,8 +540,8 @@ data_mmcif_pdbx.dic
                '[A-Za-z0-9]+(,[A-Za-z0-9]+)*'
 ;              A list of comma separated chain or asym ids.
 ;
-               3x4_matrices         char
-               '((([ \t]*-?(([0-9]+)[.]?|([0-9]*[.][0-9]+))([(][0-9]+[)])?([eE][+-]?[0-9]+)? +){3}?(-?(([0-9]+)[.]?|([0-9]*[.][0-9]+))([(][0-9]+[)])?([eE][+-]?[0-9]+)? *\n([\t ]*\n)*)){3})*(([ \t]*-?(([0-9]+)[.]?|([0-9]*[.][0-9]+))([(][0-9]+[)])?([eE][+-]?[0-9]+)? +){3}?(-?(([0-9]+)[.]?|([0-9]*[.][0-9]+))([(][0-9]+[)])?([eE][+-]?[0-9]+)? *\n([\t ]*\n)*)){2}(([ \t]*-?(([0-9]+)[.]?|([0-9]*[.][0-9]+))([(][0-9]+[)])?([eE][+-]?[0-9]+)? +){3}(-?(([0-9]+)[.]?|([0-9]*[.][0-9]+))([(][0-9]+[)])?([eE][+-]?[0-9]+)? *\n?([\t ]*\n)*))[ \t]*'
+
+3x4_matrices              char   "(((([ \t]*-?(([0-9]+)[.]?|([0-9]*[.][0-9]+))([(][0-9]+[)])?([eE][+-]?[0-9]+)? +){3})?(-?(([0-9]+)[.]?|([0-9]*[.][0-9]+))([(][0-9]+[)])?([eE][+-]?[0-9]+)? *\n([\t ]*\n)*)){3})*((([ \t]*-?(([0-9]+)[.]?|([0-9]*[.][0-9]+))([(][0-9]+[)])?([eE][+-]?[0-9]+)? +){3})?(-?(([0-9]+)[.]?|([0-9]*[.][0-9]+))([(][0-9]+[)])?([eE][+-]?[0-9]+)? *\n([\t ]*\n)*)){2}((([ \t]*-?(([0-9]+)[.]?|([0-9]*[.][0-9]+))([(][0-9]+[)])?([eE][+-]?[0-9]+)? +){3})(-?(([0-9]+)[.]?|([0-9]*[.][0-9]+))([(][0-9]+[)])?([eE][+-]?[0-9]+)? *\n?([\t ]*\n)*))[ \t]*"
 ;              A set of 3x4 matrices separated by spaces and newlines on each line.
                Final newline optional. Optional spaces at start of lines. Blank lines accepted.
 ;
@@ -556,7 +556,7 @@ data_mmcif_pdbx.dic
    author char "[A-Za-z0-9_]+(( |-|'|\. )[A-Za-z0-9_]+)*( Jr.| III)?, [A-Za-z0-9_]\.(-?[A-Za-z0-9_]+\.)*$" 'Author name in PDB format: Taylor, C.A.'
    orcid_id char "[0-9]{4}-[0-9]{4}-[0-9]{4}-([0-9]{3}X|[0-9]{4})"  'ORCID pattern - dddd-dddd-dddd-dddd|dddX'
    symmetry_operation char '[-+0-9XxYyZ/ ]+,[-+0-9XxYyZ/ ]+,[-+0-9XxYyZ/ ]+' 'Allowed characters for use in symmetry operation such as 1/2-x,y,1/2-z'
-   sequence_dep        char '[a-zA-Z0-9\t \r\n\v\f\(\)]+$'  'Deposition specific one letter code'
+   sequence_dep        char '[a-zA-Z0-9\t \r\n()]+$'  'Deposition specific one letter code'
    date_dep            char '([1-9][0-9](([02468][048])|([13579][26]))-02-29)|[1-9][0-9][0-9][0-9]-((((0[1-9])|(1[0-2]))-((0[1-9])|(1[0-9])|(2[0-8])))|((((0[13578])|(1[02]))-31)|(((0[1,3-9])|(1[0-2]))-(29|30))))' 'Deposition specific date with better checking'
 
 #####################
@@ -898,6 +898,31 @@ save_atom_site
 ;
      save_
 
+save__atom_site.id
+   _item_description.description  
+;              The value of _atom_site.id must uniquely identify a record in the
+               ATOM_SITE list.
+               <snip>
+;
+
+   #
+   loop_
+   _item.name
+   _item.category_id
+   _item.mandatory_code
+     "_atom_site.id"                 atom_site            yes  
+     "_atom_site_anisotrop.id"       atom_site_anisotrop  yes  
+     "_geom_angle.atom_site_id_1"    geom_angle           yes  
+     # <snip>
+   #
+   _item_aliases.alias_name  "_atom_site_label"
+   _item_aliases.dictionary  cif_core.dic
+   _item_aliases.version     2.0.1
+   #
+   # <snip>
+   _item_type.code  code
+   # <snip>
+save_
 # <snip>
 
 save__atom_site.attached_hydrogens
@@ -1118,6 +1143,73 @@ save__atom_site.auth_comp_id
     _item_type.code               code
      save_
 
+# <snip>
+#
+save_exptl_crystal
+   _category.description     
+;              Data items in the EXPTL_CRYSTAL category record the results of
+               experimental measurements on the crystal or crystals used,
+               such as shape, size or density.
+;
+
+   _category.id              exptl_crystal
+   _category.mandatory_code  no
+   #
+   _category_key.name  "_exptl_crystal.id"
+   #
+   loop_
+   _category_group.id
+     inclusive_group  
+     exptl_group      
+   #
+save_
+
+# <snip>
+
+save__exptl_crystal.density_percent_sol
+# <snip> description
+   _item.name            "_exptl_crystal.density_percent_sol"
+   _item.category_id     exptl_crystal
+   _item.mandatory_code  no
+   #
+   _pdbx_item_description.name         "_exptl_crystal.density_percent_sol"
+   _pdbx_item_description.description  "Percent solvent content of cell"
+   #
+   loop_
+   _item_range.maximum
+   _item_range.minimum
+     100.0    0.0  
+       0.0    0.0  
+     100.0  100.0  
+   #
+   loop_
+   _pdbx_item_range.name
+   _pdbx_item_range.minimum
+   _pdbx_item_range.maximum
+     "_exptl_crystal.density_percent_sol"  15  15  
+     "_exptl_crystal.density_percent_sol"  15  80  
+     "_exptl_crystal.density_percent_sol"  80  80  
+   #
+   _item_type.code  float
+   #
+save_
+
+# <snip>
+
+save__exptl_crystal.id
+   #
+   loop_
+   _item.name
+   _item.category_id
+   _item.mandatory_code
+     "_exptl_crystal.id"                    exptl_crystal            yes  
+     # <snip>
+   #
+   _item_type.code  code
+   #
+save_
+
+# <snip>
 
 # <snip>
 
@@ -1190,3 +1282,4 @@ atom_site_anisotrop                      1  '_atom_site_anisotrop.pdbx_PDB_model
 atom_site_anisotrop                      2  '_atom_site_anisotrop.type_symbol'                    '_atom_type.symbol'                         atom_type
 atom_sites                               1  '_atom_sites.entry_id'                                '_entry.id'                                 entry
 # <snip>
+#

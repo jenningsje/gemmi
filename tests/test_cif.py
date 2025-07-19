@@ -2,11 +2,12 @@
 
 import gc
 import os
+import pickle
 import unittest
 from gemmi import cif
 
 class TestDoc(unittest.TestCase):
-    def test_slice(self):
+    def test_slicing_and_pickling(self):
         doc = cif.read_string("""
             data_a
             _one 1 _two 2 _three 3
@@ -15,27 +16,20 @@ class TestDoc(unittest.TestCase):
             data_c
             _two 2 _four 4 _six 6
         """)
+        self.assertTrue('a' in doc)
+        self.assertFalse('d' in doc)
         self.assertEqual([b.name for b in doc[:1]], ['a'])
         self.assertEqual([b.name for b in doc[1:]], ['b', 'c'])
         self.assertEqual([b.name for b in doc[:]], ['a', 'b', 'c'])
         self.assertEqual([b.name for b in doc[1:-1]], ['b'])
         self.assertEqual([b.name for b in doc[1:1]], [])
 
-    def test_contains(self):
-        doc = cif.read_string("""
-            data_a
-            _one 1 _two 2 _three 3
-            data_b
-            _four 4
-            data_c
-            _two 2 _four 4 _six 6
-        """)
-        self.assertEqual('a' in doc, True)
-        self.assertEqual('d' in doc, False)
+        unpickled = pickle.loads(pickle.dumps(doc))
+        self.assertEqual(unpickled.as_string(), doc.as_string())
 
 class TestBlock(unittest.TestCase):
     def test_find(self):
-        block = cif.read_string("""
+        block = cif.read_string(b"""
             data_test
             _one 1 _two 2 _three 3
             _nonloop_a alpha
@@ -186,7 +180,7 @@ class TestBlock(unittest.TestCase):
         doc = cif.Document()
         block = doc.add_new_block('b')
         block.set_mmcif_category('_c', {
-            'one': ('?', 'ab', ';text field\n;'),
+            'one': ['?', 'ab', ';text field\n;'],
             'two': [-1, 4./3, '"double quoted"']}, raw=True)
         self.assertEqual(block.find_values('_c.one')[0], '?')
         self.assertEqual(block.find_values('_c.one').str(1), 'ab')
@@ -194,7 +188,7 @@ class TestBlock(unittest.TestCase):
         self.assertEqual(block.find_values('_c.two').str(0), '-1')
         self.assertEqual(block.find_values('_c.two').str(2), 'double quoted')
         block.set_mmcif_category('_d', {
-            'one': (None, 'a b', 'text\nfield'),
+            'one': [None, 'a b', 'text\nfield'],
             'two': [-1, '?', False]})
         def check_d():
             self.assertEqual(block.find_values('_d.one')[0], '?')
@@ -206,14 +200,14 @@ class TestBlock(unittest.TestCase):
             self.assertEqual(block.find_values('_d.two')[2], '.')
         check_d()
         block.set_mmcif_category('_D', {
-            'one': ('?', "'a b'", ';text\nfield\n;'),
+            'one': ['?', "'a b'", ';text\nfield\n;'],
             'two': ['-1', "'?'", '.']},
             raw=True)
         self.assertEqual(set(block.find_mmcif_category('_d').tags),
                          {'_D.one', '_D.two'})
         check_d()
         block.set_mmcif_category('_d', {
-            'one': (None, "'a b'", ';text\nfield\n;'),
+            'one': [None, "'a b'", ';text\nfield\n;'],
             'two': [-1, "'?'", False]},
             raw=True)
         check_d()
@@ -358,7 +352,11 @@ class TestBlock(unittest.TestCase):
             _One 1 _thrEE 3
             _NonLoop_a alpha
             loop_ _lbBb _ln  B 1  D 2"""
-        self.assertEqual(block.as_string().split(), expected.split())
+        block_str = block.as_string()
+        self.assertEqual(block_str.split(), expected.split())
+
+        unpickled = pickle.loads(pickle.dumps(block))
+        self.assertEqual(unpickled.as_string(), block_str)
 
 class TestQuote(unittest.TestCase):
     def test_quote(self):
@@ -370,13 +368,79 @@ class TestQuote(unittest.TestCase):
 def full_path(filename):
     return os.path.join(os.path.dirname(__file__), filename)
 
-class TestDictinary(unittest.TestCase):
+class TestDictionary(unittest.TestCase):
     def test_frame_reading(self):
         block = cif.read(full_path('mmcif_pdbx_v50_frag.dic')).sole_block()
         self.assertIsNone(block.find_frame('heyho'))
         frame = block.find_frame('_atom_site.auth_atom_id')
         code = frame.find_value('_item_type.code')
         self.assertEqual(code, 'atcode')
+
+    def test_validation(self):
+        doc = cif.read_string("""
+            data_dummy_block
+            loop_
+            _atom_site.auth_asym_id
+            _atom_site.auth_comp_id
+            _atom_site.auth_atom_id
+            A CYS N
+            A CYS CA
+            _custom_tag 5
+            loop_ _another_one 6
+        """)
+        msg_list = []
+        ddl = cif.Ddl(logger=(lambda msg: msg_list.append(msg), 6))
+        ddl.read_ddl(cif.read(full_path('mmcif_pdbx_v50_frag.dic')))
+        self.assertEqual(msg_list, [])
+        ddl.validate_cif(doc)
+        self.assertEqual(msg_list,
+                         ['[dummy_block] unknown tag _custom_tag',
+                          '[dummy_block] unknown tag _another_one',
+                          '[dummy_block] missing mandatory tag: _atom_site.id',
+                          '[dummy_block] missing category key: _atom_site.id'])
+
+        # try out set_logger()
+        counter = 0
+        def incr_counter(_):
+            nonlocal counter
+            counter += 1
+        ddl.set_logger((incr_counter, 7))
+        ddl.validate_cif(doc)
+        self.assertEqual(counter, len(msg_list))
+
+        msg_list = []
+        ddl.set_logger(lambda msg: msg_list.append(msg))
+        doc = cif.read_string("""
+            data_b2
+            _something.unexpected here
+            loop_
+            _atom_site.id
+            _atom_site.auth_asym_id
+            _atom_site.auth_comp_id
+            _atom_site.auth_atom_id
+            _atom_site.attached_hydrogens
+            1 A CYS N   -1
+            2 'hey hey' CYS CA   1
+            2 A CYS CA   1
+
+            _exptl_crystal.id 1
+            _exptl_crystal.density_percent_sol   10.5
+        """)
+        ddl.validate_cif(doc)
+        expected = [
+            '[b2] unknown tag _something.unexpected',                 # 1
+            "string:4 [b2] _atom_site.auth_asym_id: "
+            "'hey hey' does not match the code regex",                # 2
+            'string:4 [b2] _atom_site.attached_hydrogens: '
+            'value out of expected range: -1',                        # 3
+            '[b2] category atom_site has 1 duplicated key:\n  id=2',  # 4
+        ]
+        self.assertEqual(msg_list, expected)
+        msg_list = []
+        ddl.use_deposition_checks = True
+        ddl.validate_cif(doc)
+        expected.insert(-1, 'string:15 [b2] value out of expected range: 10.5')
+        self.assertEqual(msg_list, expected)
 
 if __name__ == '__main__':
     unittest.main()

@@ -5,9 +5,8 @@
 
 #include "validate_mon.h"
 #include <stdio.h>
-#include <exception>
 #include "gemmi/chemcomp.hpp"     // for ChemComp
-#include "gemmi/chemcomp_xyz.hpp" // for make_residue_from_chemcomp_block
+#include "gemmi/mmcif.hpp"        // for make_residue_from_chemcomp_block
 #include "gemmi/topo.hpp"         // for Topo
 #include "gemmi/calculate.hpp"    // for find_best_plane
 
@@ -60,9 +59,34 @@ void check_bond_angle_consistency(const ChemComp& cc) {
   }
 }
 
+void check_repeated_atoms_in_restraints(const ChemComp& cc) {
+  auto ensure_unique = [&](const std::initializer_list<std::string>& strings) {
+    for (auto s1 = strings.begin(); s1 != strings.end(); ++s1)
+      for (auto s2 = s1 + 1; s2 != strings.end(); ++s2)
+        if (*s1 == *s2)
+          printf("%s [restr-dup] duplicated atom %s in %s\n",
+                 cc.name.c_str(), s1->c_str(), gemmi::join_str(strings, '-').c_str());
+  };
+  for (const Restraints::Bond& bond : cc.rt.bonds)
+    ensure_unique({bond.id1.atom, bond.id2.atom});
+  for (const Restraints::Angle& angle : cc.rt.angles)
+    ensure_unique({angle.id1.atom, angle.id2.atom, angle.id3.atom});
+  for (const Restraints::Torsion& tor : cc.rt.torsions)
+    ensure_unique({tor.id1.atom, tor.id2.atom, tor.id3.atom, tor.id4.atom});
+  for (const Restraints::Chirality& chir : cc.rt.chirs)
+    ensure_unique({chir.id1.atom, chir.id2.atom, chir.id3.atom, chir.id_ctr.atom});
+  for (const Restraints::Plane& t : cc.rt.planes) {
+    for (auto a1 = t.ids.begin(); a1 != t.ids.end(); ++a1)
+      for (auto a2 = a1 + 1; a2 != t.ids.end(); ++a2)
+        if (a1->atom == a2->atom)
+          printf("%s [restr-dup] duplicated atom %s in plane %s\n",
+                 cc.name.c_str(), a1->atom.c_str(), t.label.c_str());
+    }
+}
+
 template <typename T>
 bool check_esd(const std::string& name, const T* restr) {
-  if (restr->esd <= 0.) {
+  if (restr->esd <= 0. && !(restr->esd == 0 && std::is_same<T, Restraints::Torsion>::value)) {
     printf("%s [esd] %s %s has non-positive esd: %g\n", name.c_str(),
            restr->what(), restr->str().c_str(), restr->esd);
     return false;
@@ -282,10 +306,10 @@ void check_monomer(const cif::Block& block, double z_score) {
   gemmi::ChemComp cc = gemmi::make_chemcomp_from_block(block);
   check_valency(cc);
   check_bond_angle_consistency(cc);
+  check_repeated_atoms_in_restraints(cc);
   if (z_score != +INFINITY) {
     // check consistency of _chem_comp_atom.x/y/z with restraints
-    gemmi::Residue res = gemmi::make_residue_from_chemcomp_block(block,
-                                                gemmi::ChemCompModel::Xyz);
+    gemmi::Residue res = gemmi::make_residue_from_chemcomp_block(block, gemmi::ChemCompModel::Xyz);
     Topo topo;
     topo.apply_restraints(cc.rt, res, nullptr, gemmi::Asu::Same, '\0', '\0', false);
     print_outliers(topo, cc.name, z_score);

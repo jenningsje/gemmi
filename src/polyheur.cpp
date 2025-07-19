@@ -1,8 +1,9 @@
 // Copyright 2017-2022 Global Phasing Ltd.
 
 #include <gemmi/polyheur.hpp>
-#include <gemmi/resinfo.hpp>   // for find_tabulated_residue
+#include <gemmi/resinfo.hpp>  // for find_tabulated_residue
 #include <gemmi/modify.hpp>   // for rename_residues
+#include <gemmi/atox.hpp>     // for no_sign_atoi
 
 namespace gemmi {
 
@@ -20,7 +21,7 @@ PolymerType check_polymer_type(const ConstResidueSpan& span, bool ignore_entity_
         r.entity_type == EntityType::Polymer) {
       if (r.het_flag == 'A')
         has_atom_record = true;
-      ResidueInfo info = find_tabulated_residue(r.name);
+      const ResidueInfo& info = find_tabulated_residue(r.name);
       if (info.found()) {
         // Exclude water and ions - it can make difference
         // if this function is called for the whole chain.
@@ -198,7 +199,7 @@ void assign_subchain_names(Chain& chain, int& nonpolymer_counter) {
         // to keep the name short use base36 for 2+ digit numbers:
         // 1, 2, ..., 9, 00, 01, ..., 09, 0A, 0B, ..., 0Z, 10, ...
         if (nonpolymer_counter < 10) {
-          res.subchain += ('0' + nonpolymer_counter);
+          res.subchain += char('0' + nonpolymer_counter);
         } else {
           const char base36[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
           int n = nonpolymer_counter - 10;
@@ -330,7 +331,7 @@ bool trim_to_alanine(Residue& res) {
 }
 
 template <size_t I, typename T1, typename T2>
-bool in_vector_at(T1& x, std::vector<T2>& v) {
+static bool in_vector_at(T1& x, std::vector<T2>& v) {
   for (const auto& el : v)
     if (std::get<I>(el) == x)
       return true;
@@ -389,7 +390,7 @@ void restore_full_ccd_codes(Structure& st) {
 
 // Unlike _entity_poly_seq, SEQRES doesn't contain alternative residue names.
 // This function adds the alternative names to full_sequence.
-void add_microhetero_to_sequence(Entity& ent, ConstResidueSpan polymer) {
+static void add_microhetero_to_sequence(Entity& ent, ConstResidueSpan polymer) {
   ent.reflects_microhetero = false;
   int max_n = -1;  // max label_seq seen so far
   for (const Residue& res : polymer) {
@@ -420,6 +421,40 @@ void add_microhetero_to_sequences(Structure& st, bool overwrite) {
       continue;
     if (overwrite || !ent.reflects_microhetero)
       add_microhetero_to_sequence(ent, polymer);
+  }
+}
+
+void add_tls_group_ids(Structure& st) {
+  std::vector<TlsGroup>* tls_groups = st.meta.get_tls_groups();
+  if (!tls_groups)
+    return;
+  bool has_ids = false;
+  for (const Model& model : st.models)
+    for (const Chain& chain : model.chains)
+      for (const Residue& res : chain.residues)
+        for (const Atom& atom : res.atoms)
+          if (atom.tls_group_id >= 0)
+            has_ids = true;
+  if (has_ids)
+    return;
+  for (const TlsGroup& tls : *tls_groups) {
+    // assuming that _pdbx_refine_tls.id is a non-negative number
+    const char* endptr;
+    short tls_id = (short) no_sign_atoi(tls.id.c_str(), &endptr);
+    if (endptr == tls.id.c_str() || *endptr != '\0')
+      continue;
+    for (const TlsGroup::Selection& sel : tls.selections) {
+      // for now we don't use selection_details, only chains and sequence ids
+      for (Model& model : st.models)
+        for (Chain& chain : model.chains)
+          if (chain.name == sel.chain) {
+            for (Residue& res : chain.residues)
+              if (sel.res_begin <= res.seqid && res.seqid <= sel.res_end) {
+                for (Atom& atom : res.atoms)
+                  atom.tls_group_id = tls_id;
+              }
+          }
+    }
   }
 }
 

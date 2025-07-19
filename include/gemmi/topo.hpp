@@ -6,13 +6,13 @@
 #define GEMMI_TOPO_HPP_
 
 #include <map>           // for multimap
-#include <ostream>       // for ostream
 #include <memory>        // for unique_ptr
 #include <unordered_map> // for unordered_map
 #include "chemcomp.hpp"  // for ChemComp
 #include "monlib.hpp"    // for MonLib
 #include "model.hpp"     // for Residue, Atom
 #include "calculate.hpp" // for calculate_angle, calculate_dihedral
+#include "logger.hpp"    // for Logger
 
 namespace gemmi {
 
@@ -184,7 +184,7 @@ struct GEMMI_DLL Topo {
     return -1;
   }
 
-  std::ostream* warnings = nullptr;
+  Logger logger{};
   bool only_bonds = false;  // an internal flag for apply_restraints()
   std::vector<ChainInfo> chain_infos;
   std::vector<Link> extras;
@@ -274,12 +274,6 @@ struct GEMMI_DLL Topo {
 
   void set_cispeps_in_structure(Structure& st);
 
-  GEMMI_COLD void err(const std::string& msg) const {
-    if (warnings == nullptr)
-      fail(msg);
-    *warnings << "Warning: " << msg << std::endl;
-  }
-
 private:
   // storage for link restraints modified by aliases
   std::vector<std::unique_ptr<Restraints>> rt_storage;
@@ -295,7 +289,7 @@ private:
 GEMMI_DLL std::unique_ptr<Topo>
 prepare_topology(Structure& st, MonLib& monlib, size_t model_index,
                  HydrogenChange h_change, bool reorder,
-                 std::ostream* warnings=nullptr, bool ignore_unknown_links=false,
+                 const Logger& logger={}, bool ignore_unknown_links=false,
                  bool use_cispeps=false);
 
 

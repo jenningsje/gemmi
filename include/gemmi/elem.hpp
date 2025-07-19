@@ -12,7 +12,7 @@ namespace gemmi {
 // elements
 enum class El : unsigned char {
   X=0,  // unknown element is marked as X in PDB entries
-  H=1, He, Li, Be, B, C, N, O, F, Ne, Na, Mg, Al, Si, P, S, Cl, Ar,  // 1-3
+  H, He, Li, Be, B, C, N, O, F, Ne, Na, Mg, Al, Si, P, S, Cl, Ar,  // 1-3
   K, Ca, Sc, Ti, V, Cr, Mn, Fe, Co, Ni, Cu, Zn, Ga, Ge, As, Se, Br, Kr,  // 4
   Rb, Sr, Y, Zr, Nb, Mo, Tc, Ru, Rh, Pd, Ag, Cd, In, Sn, Sb, Te, I, Xe,  // 5
   Cs, Ba, La, Ce, Pr, Nd, Pm, Sm, Eu, Gd, Tb, Dy, Ho, Er, Tm, Yb, Lu,  // 6..
@@ -25,9 +25,9 @@ enum class El : unsigned char {
 
 inline bool is_hydrogen(El el) { return el == El::H || el == El::D; }
 
-// somewhat arbitrary division into metals and non-metals
-inline bool is_metal(El el) {
-  static constexpr bool table[] = {
+// arbitrary division into metals and non-metals (Ge and Sb are metals here)
+inline bool& is_metal_value(El el) {
+  static bool table[] = {
     // X     H     He
     false, false, false,
     // Li  Be     B      C      N      O      F     Ne
@@ -57,12 +57,19 @@ inline bool is_metal(El el) {
     // D    END
     false, false
   };
-  static_assert(table[static_cast<int>(El::D)] == false, "Hmm");
-  static_assert(sizeof(table) / sizeof(table[0]) ==
-                static_cast<int>(El::END) + 1, "Hmm");
+  static_assert(sizeof(table) / sizeof(table[0]) == static_cast<int>(El::END) + 1, "Hmm");
   return table[static_cast<int>(el)];
 }
 
+inline bool is_metal(El el) { return is_metal_value(el); }
+inline void set_is_metal(El el, bool v) { is_metal_value(el) = v; }
+
+// Helper function, not public. Replaces =='s in static_assert comparisons
+// that were reported to fail on i386 / GCC 13: the numbers were compared
+// as 80-bit, the tabulated value was double-rounded, the literal was not.
+constexpr bool ce_almost_eq(double x, double y) {
+  return -1e-6 < x-y && x-y < 1e-6;
+}
 
 inline double molecular_weight(El el) {
   static constexpr double weights[] = {
@@ -97,7 +104,7 @@ inline double molecular_weight(El el) {
     /*Nh*/ 284, /*Fl*/ 289, /*Mc*/ 288, /*Lv*/ 293, /*Ts*/ 294, /*Og*/ 294,
     /*D*/ 2.0141, /*END*/ 0.0
   };
-  static_assert(weights[static_cast<int>(El::D)] == 2.0141, "Hmm");
+  static_assert(ce_almost_eq(weights[static_cast<int>(El::D)], 2.0141), "Hmm");
   static_assert(sizeof(weights) / sizeof(weights[0]) ==
                 static_cast<int>(El::END) + 1, "Hmm");
   return weights[static_cast<int>(el)];
@@ -138,7 +145,7 @@ inline float covalent_radius(El el) {
     /*Ts*/ 1.50f, /*Og*/ 1.50f,
     /*D*/ 0.31f, /*END*/ 0.0f
   };
-  static_assert(radii[static_cast<int>(El::D)] == 0.31f, "Hmm");
+  static_assert(ce_almost_eq(radii[static_cast<int>(El::D)], 0.31f), "Hmm");
   static_assert(sizeof(radii) / sizeof(radii[0]) ==
                 static_cast<int>(El::END) + 1, "Hmm");
   return radii[static_cast<int>(el)];
@@ -183,7 +190,7 @@ inline float vdw_radius(El el) {
     /*Ts*/ 1.00f, /*Og*/ 1.00f,
     /*D*/  1.20f, /*END*/0.f
   };
-  static_assert(radii[static_cast<int>(El::D)] == 1.2f, "Hmm");
+  static_assert(ce_almost_eq(radii[static_cast<int>(El::D)], 1.2f), "Hmm");
   static_assert(sizeof(radii) / sizeof(radii[0]) ==
                 static_cast<int>(El::END) + 1, "Hmm");
   return radii[static_cast<int>(el)];

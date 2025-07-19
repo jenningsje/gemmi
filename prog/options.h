@@ -35,6 +35,8 @@ extern const option::Descriptor CommonUsage[];
 
 std::vector<int> parse_comma_separated_ints(const char* arg);
 std::vector<double> parse_blank_separated_numbers(const char* arg);
+bool parse_number_or_range(const char* start, float* value1, float* value2);
+bool parse_number_or_range(const char* start, double* value1, double* value2);
 
 struct Arg: public option::Arg {
   static option::ArgStatus Required(const option::Option& option, bool msg);
@@ -56,7 +58,12 @@ struct Arg: public option::Arg {
   static option::ArgStatus AsuChoice(const option::Option& option, bool msg) {
     return Arg::Choice(option, msg, {"ccp4", "tnt"});
   }
+  static option::ArgStatus NumberOrRange(const option::Option& option, bool msg);
 };
+
+inline const char* given_name(const option::Option& opt) {  // sans one dash
+  return opt.namelen > 1 ? opt.name + 1 : opt.desc->shortopt;
+}
 
 struct OptParser : option::Parser {
   const char* program_name;
@@ -78,8 +85,7 @@ struct OptParser : option::Parser {
   }
   void check_exclusive_group(const std::vector<int>& group);
   const char* given_name(int opt) const {  // sans one dash
-    return options[opt].namelen > 1 ? options[opt].name + 1
-                                    : options[opt].desc->shortopt;
+    return ::given_name(options[opt]);
   }
   // for Arg::YesNo
   bool is_yes(int opt, bool default_) const {
@@ -90,7 +96,7 @@ struct OptParser : option::Parser {
   int integer_or(int opt, int default_) const;
 };
 
-namespace gemmi { enum class CoorFormat; }
+namespace gemmi { enum class CoorFormat : unsigned char; }
 namespace gemmi { namespace cif { struct WriteOptions; } }
 
 // to be used with Arg::CoorFormat

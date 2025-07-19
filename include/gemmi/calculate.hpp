@@ -6,7 +6,9 @@
 #define GEMMI_CALCULATE_HPP_
 
 #include <array>
+#include <algorithm>  // for std::min, std::minmax
 #include "model.hpp"
+#include "select.hpp"
 
 namespace gemmi {
 
@@ -20,16 +22,28 @@ template<> inline bool has_hydrogen(const Atom& atom) {
   return atom.is_hydrogen();
 }
 
-/// deprecated, use has_hydrogen() or count_atom_sites(..., Selection("[H,D]")
-template<class T> size_t count_hydrogen_sites(const T& obj) {
+template<class T> size_t count_atom_sites(const T& obj, const Selection* sel=nullptr) {
   size_t sum = 0;
-  for (const auto& child : obj.children())
-    sum += count_hydrogen_sites(child);
+  if (!sel || sel->matches(obj))
+    for (const auto& child : obj.children())
+      sum += count_atom_sites(child, sel);
   return sum;
 }
-template<> inline size_t count_hydrogen_sites(const Atom& atom) {
-  return (size_t) atom.is_hydrogen();
+template<> inline size_t count_atom_sites(const Atom& atom, const Selection* sel) {
+  return (!sel || sel->matches(atom)) ? 1 : 0;
 }
+
+template<class T> double count_occupancies(const T& obj, const Selection* sel=nullptr) {
+  double sum = 0;
+  if (!sel || sel->matches(obj))
+    for (const auto& child : obj.children())
+        sum += count_occupancies(child, sel);
+  return sum;
+}
+template<> inline double count_occupancies(const Atom& atom, const Selection* sel) {
+  return (!sel || sel->matches(atom)) ? atom.occ : 0;
+}
+
 
 template<class T> double calculate_mass(const T& obj) {
   double sum = 0;
@@ -72,6 +86,28 @@ template<class T> std::pair<float,float> calculate_b_iso_range(const T& obj) {
 template<> inline std::pair<float,float> calculate_b_iso_range(const Atom& atom) {
   return {atom.b_iso, atom.b_iso};
 }
+
+/// uses min/max eigenvalues of Baniso, or Biso if B-factor is isotropic
+inline std::pair<double, double> calculate_b_aniso_range(const Model& model) {
+  std::pair<double, double> range{INFINITY, -INFINITY};
+  for (const Chain& chain : model.chains)
+    for (const Residue& residue : chain.residues)
+      for (const Atom& atom : residue.atoms) {
+        if (atom.occ == 0)
+          continue;
+        if (atom.aniso.nonzero()) {
+          std::array<double,3> eig = atom.aniso.calculate_eigenvalues();
+          auto u = std::minmax({eig[0], eig[1], eig[2]});
+          range.first = std::min(range.first, u.first * u_to_b());
+          range.second = std::max(range.second, u.second * u_to_b());
+        } else {
+          range.first = std::min(range.first, (double) atom.b_iso);
+          range.second = std::max(range.second, (double) atom.b_iso);
+        }
+      }
+  return range;
+}
+
 
 template<class T> void expand_box(const T& obj, Box<Position>& box) {
   for (const auto& child : obj.children())
@@ -146,9 +182,10 @@ inline double calculate_omega(const Residue& res, const Residue& next) {
 }
 
 inline bool is_peptide_bond_cis(const Atom* ca1, const Atom* c,
-                                const Atom* n, const Atom* ca2) {
+                                const Atom* n, const Atom* ca2,
+                                double tolerance_deg) {
   double omega = calculate_dihedral_from_atoms(ca1, c, n, ca2);
-  return std::fabs(omega) < rad(30.);
+  return std::fabs(omega) < rad(tolerance_deg);
 }
 
 inline double calculate_chiral_volume(const Position& actr, const Position& a1,
@@ -178,6 +215,10 @@ inline double get_distance_from_plane(const Position& pos,
                                       const std::array<double, 4>& coeff) {
   return coeff[0] * pos.x + coeff[1] * pos.y + coeff[2] * pos.z + coeff[3];
 }
+
+GEMMI_DLL FTransform parse_triplet_as_ftransform(const std::string& s);
+
+GEMMI_DLL SMat33<double> calculate_u_from_tls(const TlsGroup& tls, const Position& pos);
 
 } // namespace gemmi
 #endif

@@ -1,7 +1,7 @@
 
 gemmi/addends.hpp
     Addends to scattering form factors used in DensityCalculator
-    and in StructureFactorCalculator.
+    and StructureFactorCalculator.
 
 gemmi/align.hpp
     Sequence alignment, label_seq_id assignment, structure superposition.
@@ -18,11 +18,11 @@ gemmi/asumask.hpp
     AsuBrick and MaskedGrid that is used primarily as direct-space asu mask.
 
 gemmi/atof.hpp
-    Functions that convert string to floating-point number ignoring locale.
+    Functions that convert strings to floating-point numbers ignoring locale.
     Simple wrappers around fastfloat::from_chars().
 
 gemmi/atox.hpp
-    Locale-independent functions that convert string to integer,
+    Locale-independent functions that convert strings to integers,
     equivalents of standard isspace and isdigit, and a few helper functions.
 
 gemmi/bessel.hpp
@@ -54,19 +54,17 @@ gemmi/chemcomp.hpp
     ChemComp - chemical component that represents a monomer from Refmac
     monomer library, or from PDB CCD.
 
-gemmi/chemcomp_xyz.hpp
-    Reading coordinates from chemical component or Refmac monomer library files.
-
 gemmi/cif.hpp
     CIF parser (based on PEGTL) with pluggable actions,
     and a set of actions that prepare Document.
+    To just read the CIF format, include read_cif.hpp instead.
 
 gemmi/cif2mtz.hpp
     A class for converting SF-mmCIF to MTZ (merged or unmerged).
 
 gemmi/cifdoc.hpp
-    struct Document that represents the CIF file (but can be also
-    read from JSON file, such as CIF-JSON or mmJSON).
+    struct Document that represents the CIF file (but can also be
+    read from a different representation, such as CIF-JSON or mmJSON).
 
 gemmi/contact.hpp
     Contact search, based on NeighborSearch from neighbor.hpp.
@@ -81,9 +79,12 @@ gemmi/dencalc.hpp
     Tools to prepare a grid with values of electron density of a model.
 
 gemmi/dirwalk.hpp
-    Classes for iterating files in a directory tree, top-down,
-    in an alphabetical order.  It wraps the tinydir library (as we cannot
-    depend on C++17 <filesystem> yet).
+    Classes for iterating over files in a directory tree, top-down,
+    in alphabetical order. Wraps the tinydir library (as we cannot yet
+    depend on C++17 <filesystem>).
+
+gemmi/dssp.hpp
+    Functions for working with sequences (other than alignment).
 
 gemmi/ecalc.hpp
     Normalization of amplitudes F->E ("Karle" approach, similar to CCP4 ECALC).
@@ -110,15 +111,14 @@ gemmi/floodfill.hpp
 
 gemmi/formfact.hpp
     Calculation of atomic form factors approximated by a sum of Gaussians.
-    Tables with numeric coefficient are in it92.hpp and c4322.hpp.
+    Tables with numerical coefficients are in it92.hpp and c4322.hpp.
 
 gemmi/fourier.hpp
     Fourier transform applied to map coefficients.
 
 gemmi/fprime.hpp
-    C++ implementation of Cromer-Liberman calculation of anomalous scattering
-    factors, with corrections from Kissel & Pratt, Acta Cryst. A46, 170 (1990).
-    Single header. No dependencies.
+    Cromer-Liberman calculation of anomalous scattering factors,
+    with corrections from Kissel & Pratt.
 
 gemmi/fstream.hpp
     Ofstream and Ifstream: wrappers around std::ofstream and std::ifstream.
@@ -131,7 +131,7 @@ gemmi/gz.hpp
 
 gemmi/input.hpp
     Input abstraction.
-    Used to decouple file reading and uncompression.
+    Used to decouple file reading and decompression.
 
 gemmi/intensit.hpp
     Class Intensities that reads multi-record data from MTZ, mmCIF or XDS_ASCII
@@ -158,6 +158,9 @@ gemmi/levmar.hpp
 gemmi/linkhunt.hpp
     Searching for links based on the _chem_link table from monomer dictionary.
 
+gemmi/logger.hpp
+    Logger - a tiny utility for passing messages through a callback.
+
 gemmi/math.hpp
     Math utilities. 3D linear algebra.
 
@@ -165,32 +168,30 @@ gemmi/metadata.hpp
     Metadata from coordinate files.
 
 gemmi/mmcif.hpp
-    Read mmcif (PDBx/mmCIF) file into a Structure from model.hpp.
+    Read mmCIF (PDBx/mmCIF) file into a Structure from model.hpp.
 
 gemmi/mmcif_impl.hpp
-    Function used in both mmcif.hpp and refln.hpp (for coordinate and
+    Functions used in both mmcif.hpp and refln.hpp (for coordinate and
     reflection mmCIF files).
 
 gemmi/mmdb.hpp
     Converts between gemmi::Structure and mmdb::Manager.
 
 gemmi/mmread.hpp
-    Read any supported coordinate file.
+    Read any supported coordinate file. Usually, mmread_gz.hpp is preferred.
 
 gemmi/mmread_gz.hpp
     Functions for reading possibly gzipped coordinate files.
-    Trivial wrappers that can make compilation faster
-    by having a separate implementation file src/mmread_gz.cpp.
 
 gemmi/model.hpp
-    Data structures to keep macromolecular structure model.
+    Data structures to store macromolecular structure models.
 
 gemmi/modify.hpp
     Modify various properties of the model.
 
 gemmi/monlib.hpp
     Monomer library - (Refmac) restraints dictionary,
-    which is made of monomers (chemical components), links and modifications.
+    which consists of monomers (chemical components), links, and modifications.
 
 gemmi/mtz.hpp
     MTZ reflection file format.
@@ -207,32 +208,26 @@ gemmi/neutron92.hpp
     from Neutron News, Vol. 3, No. 3, 1992.
 
 gemmi/numb.hpp
-    Utilities for parsing CIF numbers (the CIF spec calls it 'numb').
+    Utilities for parsing CIF numbers (the CIF spec calls them 'numb').
 
 gemmi/pdb.hpp
-    Read PDB file format and store it in Structure.
+    Read the PDB file format and store it in Structure.
 
 gemmi/pdb_id.hpp
-    handling PDB ID and $PDB_DIR: is_pdb_code(), expand_pdb_code_to_path()
+    Handling PDB ID and $PDB_DIR: is_pdb_code(), expand_pdb_code_to_path(), ...
 
 gemmi/pirfasta.hpp
-    Read sequence from PIR or (multi-)FASTA format.
+    Read sequences from PIR or (multi-)FASTA formats.
 
 gemmi/polyheur.hpp
     Heuristic methods for working with chains and polymers.
-    Includes also a few well-defined functions, such as removal of waters.
+    Also includes a few well-defined functions, such as removal of waters.
 
 gemmi/qcp.hpp
     Structural superposition, the QCP method.
 
 gemmi/read_cif.hpp
     Functions for reading possibly gzipped CIF files.
-    Trivial wrappers that can make compilation faster
-    by having a separate implementation file src/read_cif.cpp.
-
-gemmi/read_map.hpp
-    Functions for reading possibly gzipped CCP4 map files.
-    Trivial wrappers that can make compilation faster.
 
 gemmi/recgrid.hpp
     ReciprocalGrid -- grid for reciprocal space data.
@@ -243,10 +238,6 @@ gemmi/reciproc.hpp
 gemmi/refln.hpp
     Reads reflection data from the mmCIF format.
 
-gemmi/remarks.hpp
-    Function read_metadata_from_remarks() that interprets REMARK 3
-    and REMARK 200/230/240 filling in Metadata.
-
 gemmi/resinfo.hpp
     List of common residues with basic data.
 
@@ -254,7 +245,7 @@ gemmi/riding_h.hpp
     Place hydrogens according to bond lengths and angles from monomer library.
 
 gemmi/scaling.hpp
-    Anisotropic scaling of data (includes scaling of bulk solvent parameters)
+    Anisotropic scaling of data (includes scaling of bulk solvent parameters).
 
 gemmi/select.hpp
     Selections.
@@ -269,13 +260,13 @@ gemmi/seqtools.hpp
     Functions for working with sequences (other than alignment).
 
 gemmi/serialize.hpp
-    Binary serialization for Structure (as well as Model, UnitCell, etc)
+    Binary serialization for Structure (as well as Model, UnitCell, etc).
 
 gemmi/sfcalc.hpp
     Direct calculation of structure factors.
 
 gemmi/small.hpp
-    Representation of small molecule or inorganic crystal.
+    Representation of a small molecule or inorganic crystal.
     Flat list of atom sites. Minimal functionality.
 
 gemmi/smcif.hpp
@@ -331,5 +322,8 @@ gemmi/util.hpp
 gemmi/version.hpp
     Version number.
 
+gemmi/xds2mtz.hpp
+    Convert XDS_ASCII to MTZ.
+
 gemmi/xds_ascii.hpp
-    Read unmerged XDS files: XDS_ASCII.HKL and INTEGRATE.HKL.
+    Read XDS files: XDS_ASCII.HKL and INTEGRATE.HKL.

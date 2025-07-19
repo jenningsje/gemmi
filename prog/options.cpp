@@ -2,7 +2,7 @@
 
 #define GEMMI_PROG na
 #include "options.h"
-#include <cstdio>   // for fprintf, fopen
+#include <cstdio>   // for fprintf, stdin
 #include <cstdlib>  // for strtol, strtod, exit
 #include <cstring>  // for strcmp, strchr
 #include <gemmi/atox.hpp>      // for skip_blank
@@ -46,6 +46,25 @@ std::vector<double> parse_blank_separated_numbers(const char* arg) {
     }
   }
   return results;
+}
+
+template<typename T, typename Func>
+bool parse_number_or_range_(const Func& strto, const char* start, T* value1, T* value2) {
+  char* endptr = nullptr;
+  *value1 = strto(start, &endptr);
+  *value2 = *value1;
+  if (endptr != start && *endptr == ':') {
+    start = endptr + 1;
+    *value2 = strto(start, &endptr);
+  }
+  return endptr != start && *endptr == '\0';
+}
+
+bool parse_number_or_range(const char* start, float* value1, float* value2) {
+  return parse_number_or_range_(&std::strtof, start, value1, value2);
+}
+bool parse_number_or_range(const char* start, double* value1, double* value2) {
+  return parse_number_or_range_(&std::strtod, start, value1, value2);
 }
 
 option::ArgStatus Arg::Required(const option::Option& option, bool msg) {
@@ -152,6 +171,16 @@ option::ArgStatus Arg::Float3(const option::Option& option, bool msg) {
   return option::ARG_ILLEGAL;
 }
 
+option::ArgStatus Arg::NumberOrRange(const option::Option& option, bool msg) {
+  double tmp;
+  if (option.arg && parse_number_or_range(option.arg, &tmp, &tmp))
+    return option::ARG_OK;
+  if (msg)
+    fprintf(stderr, "Option -%s requires a single number or a range denoted as number:number\n",
+                    given_name(option));
+  return option::ARG_ILLEGAL;
+}
+
 // we wrap fwrite because passing it directly may cause warning
 // "ignoring attributes on template argument" [-Wignored-attributes]
 static
@@ -243,18 +272,14 @@ OptParser::paths_from_args_or_file(int opt, int other) {
   if (file_option) {
     if (nonOptionsCount() > other)
       print_try_help_and_exit("Error: File arguments together with option -f.");
-    std::FILE *f = std::fopen(file_option.arg, "r");
-    if (!f) {
-      std::perror(file_option.arg);
-      std::exit(2);
-    }
+
+    auto f = gemmi::file_open_or(file_option.arg, "r", stdin);
     char buf[512];
-    while (std::fgets(buf, 512, f)) {
+    while (std::fgets(buf, 512, f.get())) {
       std::string s = gemmi::trim_str(buf);
       if (!s.empty())
         paths.emplace_back(s);
     }
-    std::fclose(f);
   } else {
     require_input_files_as_args(other);
     for (int i = other; i < nonOptionsCount(); ++i)
@@ -273,7 +298,8 @@ gemmi::CoorFormat coor_format_as_enum(const option::Option& format_in) {
       format = gemmi::CoorFormat::Pdb;
     else if (eq("json") || eq("mmjson"))
       format = gemmi::CoorFormat::Mmjson;
-    else if (eq("chemcomp"))
+    else if (std::strncmp(format_in.arg, "chemcomp", 8) == 0 &&
+             (format_in.arg[8] == '\0' || format_in.arg[8] == ':'))
       format = gemmi::CoorFormat::ChemComp;
   }
   return format;

@@ -1,10 +1,3 @@
-.. highlight:: cpp
-
-.. doctest::
-  :hide:
-
-  >>> import gemmi
-
 Structure analysis
 ##################
 
@@ -35,10 +28,9 @@ The implementation works with both crystal and non-crystal systems and:
 * can find neighbors any number of unit cells apart; surprisingly,
   molecules from different and non-neighboring unit cells can be
   in contact, either because of the molecule's shape (a single chain can be
-  :ref:`longer than four unit cells <long_chain>`) or because of
-  the non-optimal choice of symmetric images in the model
-  (some PDB entries even have links between chains more than
-  10 unit cells away which cannot be expressed in the 1555 type of notation).
+  :ref:`longer than four unit cells <long_chain>`) or due to a poor choice
+  of origin (some PDB entries even have links between chains more than
+  10 unit cells away which cannot be expressed in the 1555 notation).
 
 Note that while an atom can be bonded with its own symmetric image,
 it sometimes happens that an atom meant to be on a special position
@@ -235,8 +227,8 @@ image under PBC:
 
 To calculate only the distance to the atom, you can use the same function
 with `mark.pos` and symmetry operation index 0. `mark.pos` represents
-the position of the atom that has already been transformed by the symmetry
-operation `mark.image_idx` (and shifted into the unit cell).
+the position of the atom after being transformed by the symmetry
+operation `mark.image_idx` and shifted into the unit cell.
 
 .. doctest::
 
@@ -245,10 +237,14 @@ operation `mark.image_idx` (and shifted into the unit cell).
   >>> _.dist()  # doctest: +ELLIPSIS
   2.998659073040...
 
+Caveat: the image from `find_nearest_pbc_image()` is the nearest in
+fractional (not Cartesian) coordinates. It doesn't matter as long
+as the unit cell is much larger than the search radius.
+
 For more information see the :ref:`properties of NearestImage <nearestimage>`.
 
-The neighbor search can also be used with small molecule structures.
-Here, we have MgI\ :sub:`2`, with each Mg atom surrounded by 6 iodine atoms,
+The neighbor search can also be applied to small-molecule structures.
+Here, we examine MgI\ :sub:`2`, with each Mg atom surrounded by 6 iodine atoms
 at a distance of 2.92Å:
 
 .. doctest::
@@ -266,6 +262,45 @@ at a distance of 2.92Å:
   I symmetry op #3
   I symmetry op #3
 
+In this case, the unit cell size is comparable to the search radius.
+The cif file lists two atoms under the trigonal P -3 m 1 symmetry:
+
+.. code-block:: none
+
+  Mg 0.0000 1.0000 1.0000
+  I 0.3333 0.6667 0.75763(6)
+
+If we want to determine the positions of symmetry images of the iodine atom
+surrounding the Mg atom, `find_nearest_pbc_image()` is not sufficient.
+There are three different PBC images of the same mark within the search radius.
+(This may happen only in tiny unit cells and is not relevant to biomolecules.)
+For such cases, we have the function `find_nearest_pbc_images()`
+that returns all images within the specified radius. Actually, this function
+checks only the image returned by `find_nearest_pbc_image()` and adjacent unit cells
+(27 positions in total), which should be enough for a radius comparable
+to a bond length. Below is a continuation of the previous example that
+also prints PBC translations and image positions of surrounding iodine atoms:
+
+.. doctest::
+
+  >>> marks = ns.find_site_neighbors(mg_site, min_dist=0.1)
+  >>> unique_marks = list(dict.fromkeys(marks))
+  >>> for mark in unique_marks:
+  ...   site = mark.to_site(small)
+  ...   print(site.label, 'symmetry op #%d' % mark.image_idx)
+  ...   fpos = small.cell.fractionalize(mark.pos)
+  ...   for im in small.cell.find_nearest_pbc_images(mg_site.fract, 4.0, fpos, 0):
+  ...     im_pos = small.cell.fract_image(im, fpos)
+  ...     print('  ->', im, im_pos)
+  ...
+  I symmetry op #0
+    -> <gemmi.NearestImage 1_455 in distance 2.92> <gemmi.Fractional(-0.6667, 0.6667, 0.75763)>
+    -> <gemmi.NearestImage 1_555 in distance 2.92> <gemmi.Fractional(0.3333, 0.6667, 0.75763)>
+    -> <gemmi.NearestImage 1_565 in distance 2.92> <gemmi.Fractional(0.3333, 1.6667, 0.75763)>
+  I symmetry op #3
+    -> <gemmi.NearestImage 1_456 in distance 2.92> <gemmi.Fractional(-0.3333, 0.3333, 1.24237)>
+    -> <gemmi.NearestImage 1_466 in distance 2.92> <gemmi.Fractional(-0.3333, 1.3333, 1.24237)>
+    -> <gemmi.NearestImage 1_566 in distance 2.92> <gemmi.Fractional(0.6667, 1.3333, 1.24237)>
 
 Contact search
 ==============
@@ -432,6 +467,251 @@ contacts to link definitions from :ref:`monomer library <CCD_etc>`
 and to connections (LINK, SSBOND) from the structure.
 If you find it useful, please contact the author.
 
+Matthews coefficient
+====================
+
+Matthews coefficient V\ :sub:`M` is defined as the crystal volume
+per unit of protein molecular weight. Typically, the molecular weight
+for V\ :sub:`M` is calculated from a sequence,
+and that's what this section is mostly about.
+
+First, let's read a structure and get a protein sequence:
+
+.. doctest::
+
+  >>> st = gemmi.read_structure('../tests/5cvz_final.pdb')
+  >>> st.setup_entities()  # it should sort out chain parts
+  >>> list(st[0])
+  [<gemmi.Chain A with 141 res>]
+  >>> # we have just a single chain, which makes this example simpler
+  >>> chain = st[0]['A']
+  >>> chain.get_polymer()
+  <gemmi.ResidueSpan of 141: Axp [17(ALA) 18(ALA) 19(ALA) ... 157(SER)]>
+  >>> st.get_entity_of(_)  # doctest: +ELLIPSIS
+  <gemmi.Entity 'A' polymer polypeptide(L) object at 0x...>
+  >>> sequence = _.full_sequence
+
+Gemmi provides a simple function to calculate molecular weight
+from the sequence using the built-in table of popular residues:
+
+.. doctest::
+
+  >>> weight = gemmi.calculate_sequence_weight(_.full_sequence)
+  >>> # Now we can calculate Matthews coefficient
+  >>> st.cell.volume_per_image() / weight
+  3.1983428753317003
+
+We can continue and calculate the solvent content, assuming the protein
+density of 1.35 g/cm\ :sup:`3` (the other constants below are the Avogadro
+number and Å\ :sup:`3`/cm\ :sup:`3` = 10\ :sup:`-24`):
+
+.. doctest::
+
+  >>> protein_fraction = 1. / (6.02214e23 * 1e-24 * 1.35 * _)
+  >>> print('Solvent content: {:.1f}%'.format(100 * (1 - protein_fraction)))
+  Solvent content: 61.5%
+
+If the sequence includes rare chemical components
+(outside of the top 300+ most popular components in the PDB), you may
+specify the average weight of the components that are not tabulated:
+
+.. doctest::
+
+  >>> sequence = ['DSN', 'ALA', 'N2C', 'MVA', 'DSN', 'ALA', 'NCY', 'MVA']
+  >>> gemmi.calculate_sequence_weight(sequence)
+  524.6114543066407
+  >>> 524.6114543066407 + 2*130.0 # N2C and NCY are not tabulated
+  784.6114543066407
+  >>> gemmi.calculate_sequence_weight(sequence, unknown=130.0)
+  784.6114543066407
+
+The weights are assumed to be of unbonded residues. Therefore, the chain weight
+is calculated as a sum of all components minus
+(*N*--1) × weight of H\ :sub:`2`\ O.
+
+.. note::
+
+    Gemmi includes a program that calculates the Matthews coefficient
+    and the solvent content: :ref:`gemmi-contents <gemmi-contents>`.
+
+
+.. _sequence-alignment:
+
+Sequence alignment
+==================
+
+Gemmi includes a sequence alignment algorithm based on the simplest
+function (`ksw_gg`) from the `ksw2 project <https://github.com/lh3/ksw2>`_
+of `Heng Li <https://www.ncbi.nlm.nih.gov/pubmed/29750242>`_.
+
+It is a pairwise, global alignment with substitution matrix (or just
+match/mismatch values) and affine gap penalty.
+Additionally, in Gemmi the gap openings at selected positions can be made free.
+
+Let say that we want to align residues in the model to the full sequence.
+Sometimes, the alignment is ambiguous. If we'd align texts ABBC and ABC,
+both A-BC and AB-C would have the same score. In a 3D structure, the position
+of gap can be informed by inter-atomic distances.
+This information is used automatically in the `align_sequence_to_polymer`
+function. Gap positions, determined by a simple heuristic, are passed
+to the alignment algorithm as places where the gap can be opened
+without penalty.
+
+.. doctest::
+
+  >>> st = gemmi.read_pdb('../tests/pdb1gdr.ent', max_line_length=72)
+  >>> result = gemmi.align_sequence_to_polymer(st.entities[0].full_sequence,
+  ...                                          st[0][0].get_polymer(),
+  ...                                          gemmi.PolymerType.PeptideL,
+  ...                                          gemmi.AlignmentScoring())
+
+The arguments of this functions are: sequence (a list of residue names),
+:ref:`ResidueSpan <residuespan>` (a span of residues in a chain),
+and the type of chain, which is used to infer gaps.
+(The type can be taken from Entity.polymer_type, but in this example
+we wanted to keep things simple).
+
+The result provides statistics and methods of summarizing the alignment:
+
+.. doctest::
+
+  >>> result  #doctest: +ELLIPSIS
+  <gemmi.AlignmentResult object at 0x...>
+
+  >>> # score calculated according AlignmentScoring explained below
+  >>> result.score
+  70
+
+  >>> # number of matching (identical) residues
+  >>> result.match_count
+  105
+  >>> # identity = match count / length of the shorter sequence
+  >>> result.calculate_identity()
+  100.0
+  >>> # identity wrt. the 1st sequence ( = match count / 1st sequence length)
+  >>> result.calculate_identity(1)
+  75.0
+  >>> # identity wrt. the 2nd sequence
+  >>> result.calculate_identity(2)
+  100.0
+
+  >>> # CIGAR = Concise Idiosyncratic Gapped Alignment Report
+  >>> result.cigar_str()
+  '11M3I23M7I71M25I'
+
+To print out the alignment, we can combine function `add_gaps`
+and property `match_string`:
+
+.. doctest::
+
+  >>> result.add_gaps(gemmi.one_letter_code(st.entities[0].full_sequence), 1)[:70]
+  'MRLFGYARVSTSQQSLDIQVRALKDAGVKANRIFTDKASGSSSDRKGLDLLRMKVEEGDVILVKKLDRLG'
+  >>> result.match_string[:70]
+  '|||||||||||   |||||||||||||||||||||||       ||||||||||||||||||||||||||'
+  >>> result.add_gaps(gemmi.one_letter_code(st[0][0].get_polymer().extract_sequence()), 2)[:70]
+  'MRLFGYARVST---SLDIQVRALKDAGVKANRIFTDK-------RKGLDLLRMKVEEGDVILVKKLDRLG'
+
+or we can use function `AlignmentResult.formatted()`.
+
+We also have a function that aligns two sequences.
+We can exercise it by comparing two strings:
+
+.. doctest::
+
+  >>> result = gemmi.align_string_sequences(list('kitten'), list('sitting'), [])
+
+The third argument above is a list of free gap openings.
+Now we can visualize the match:
+
+.. doctest::
+
+  >>> print(result.formatted('kitten', 'sitting'), end='')  # doctest: +NORMALIZE_WHITESPACE
+  kitten-
+  .|||.| 
+  sitting
+  >>> result.score
+  0
+
+The alignment and the score is calculate according to AlignmentScoring,
+which can be passed as the last argument to both `align_string_sequences`
+and `align_sequence_to_polymer` functions.
+The default scoring is +1 for match, -1 for mismatch, -1 for gap opening,
+and -1 for each residue in the gap.
+If we would like to calculate the
+`Levenshtein distance <https://en.wikipedia.org/wiki/Levenshtein_distance>`_,
+we would use the following scoring:
+
+.. doctest::
+
+  >>> scoring = gemmi.AlignmentScoring()
+  >>> scoring.match = 0
+  >>> scoring.mismatch = -1
+  >>> scoring.gapo = 0
+  >>> scoring.gape = -1
+  >>> gemmi.align_string_sequences(list('kitten'), list('sitting'), [], scoring) # doctest: +ELLIPSIS
+  <gemmi.AlignmentResult object at 0x...>
+  >>> _.score
+  -3
+
+So the distance is 3, as expected.
+
+In addition to the scoring parameters above, we can define a substitution
+matrix. Gemmi includes ready-to-use BLOSUM62 matrix with the gap cost 10/1,
+like in `BLAST <https://www.ncbi.nlm.nih.gov/blast/html/sub_matrix.html>`_.
+
+.. doctest::
+
+  >>> blosum62 = gemmi.AlignmentScoring('b')
+  >>> blosum62.gapo, blosum62.gape
+  (-10, -1)
+
+Now we can test it on one of examples from the
+`BioPython tutorial <http://biopython.org/DIST/docs/tutorial/Tutorial.html>`_.
+First, we try global alignment:
+
+.. doctest::
+
+  >>> AA = gemmi.ResidueKind.AA
+  >>> result = gemmi.align_string_sequences(
+  ...         gemmi.expand_one_letter_sequence('LSPADKTNVKAA', AA),
+  ...         gemmi.expand_one_letter_sequence('PEEKSAV', AA),
+  ...         [], blosum62)
+  >>> print(result.formatted('LSPADKTNVKAA', 'PEEKSAV'), end='')
+  LSPADKTNVKAA
+    |..|.   |.
+  --PEEKS---AV
+  >>> result.score
+  -7
+
+We have only global alignment available, but we can use free-gaps to
+approximate a semi-global alignment (infix method) where gaps at the start
+and at the end of the second sequence are not penalized.
+Approximate -- because only gap openings are not penalized,
+residues in the gap still decrease the score:
+
+.. doctest::
+
+  >>> result = gemmi.align_string_sequences(
+  ...         gemmi.expand_one_letter_sequence('LSPADKTNVKAA', AA),
+  ...         gemmi.expand_one_letter_sequence('PEEKSAV', AA),
+  ...         # free gaps at 0 (start) and 7 (end):   01234567
+  ...         [0, -10, -10, -10, -10, -10, -10, 0],
+  ...         blosum62)
+  >>> print(result.formatted('LSPADKTNVKAA', 'PEEKSAV'), end='')  #doctest: +NORMALIZE_WHITESPACE
+  LSPADKTNVKAA
+    |..|..|   
+  --PEEKSAV---
+  >>> result.score
+  11
+
+The real infix method (or local alignment) would yield the score 16 (11+5),
+because we have 5 missing residues at the ends.
+
+.. note::
+
+    See also the :ref:`gemmi-align <gemmi-align>` program.
+
+
 Superposition
 =============
 
@@ -555,7 +835,7 @@ Selections
 Gemmi selection syntax is based on the selection syntax from MMDB,
 which is sometimes called CID (Coordinate ID). The MMDB syntax is described
 at the bottom of
-the `pdbcur documentation <http://legacy.ccp4.ac.uk/html/pdbcur.html>`_.
+the `pdbcur documentation <https://www.ccp4.ac.uk/html/pdbcur.html#atom-selection-syntax>`_.
 
 The selection has a form of slash-separated parts:
 /models/chains/residues/atoms. Leading and trailing parts can be omitted
@@ -575,11 +855,12 @@ Let us go through the individual filters first:
 * `//*/10-30` (or `10-30`) -- residues with sequence IDs from 10 to 30.
 * `//*/10A-30A` (or `10A-30A` or `///10.A-30.A` or `10.A-30.A`) --
   sequence ID can include insertion code. The MMDB syntax has a dot between
-  the sequence sequence number and the insertion code.
+  the sequence number and the insertion code.
   In Gemmi, the dot is optional.
 * `//*/(ALA)` (or `(ALA)`) -- selects residues with a given name.
 * `//*//CB` (or `CB:*` or `CB[*]`) -- selects atoms with a given name.
 * `//*//[P]` (or just `[P]`) -- selects phosphorus atoms.
+* `[metals]`, `[nonmetals]` -- selects metal or non-metal atoms.
 * `//*//:B` (or `:B`) -- selects atoms with altloc B.
 * `//*//:` (or `:`) -- selects atoms without altloc.
 * `//*//;q<0.5` (or `;q<0.5`) -- selects atoms with occupancy below 0.5
@@ -595,6 +876,7 @@ The syntax supports also comma-separated lists and negations with `!`:
 * `(!ALA)` -- all residues but alanine,
 * `[C,N,O]` -- all C, N and O atoms,
 * `[!C,N,O]` -- all atoms except C, N and O,
+* `[metals,Si]` -- all metal and Si atoms,
 * `:,A` -- altloc either empty or A (which makes one conformation),
 * `/1/A,B/20-40/CA[C]:,A` -- multiple selection criteria, all of them
   must be fulfilled.
@@ -630,7 +912,7 @@ which can then be used to iterate over the selected items in the hierarchy:
 
   >>> st = gemmi.read_structure('../tests/1pfe.cif.gz')
   >>> for model in sel.models(st):
-  ...     print('Model', model.name)
+  ...     print('Model', model.num)
   ...     for chain in sel.chains(model):
   ...         print('-', chain.name)
   ...         for residue in sel.residues(chain):
@@ -808,15 +1090,15 @@ nauty
 ~~~~~
 
 The median number of automorphisms of molecules in the CCD is only 4.
-However, the highest number of isomorphisms as of 2023 (ignoring hydrogens,
+However, the highest number of automorphisms as of 2023 (ignoring hydrogens,
 bond orders, chiralities) is a staggering 6879707136
 for `T8W <https://www.rcsb.org/ligand/T8W>`_.
 This value can be calculated almost instantly with nauty, which
 returns a set of *generators* of the automorphism group
 and the sets of equivalent vertices called *orbits*,
 rather than listing all automorphisms.
-Nauty is a software for "determining the automorphism group
-of a vertex-coloured graph, and for testing graphs for isomorphism".
+Nauty is software for "determining the automorphism group
+of a vertex-colored graph, and for testing graphs for isomorphism".
 We can use it in Python through the pynauty module.
 
 Here we set up a `pynauty <https://github.com/pdobsan/pynauty>`_
@@ -849,12 +1131,13 @@ without knowing which color corresponds to which element.
 We sorted the elements to ensure that two graphs with the same atoms
 have the same coloring. However, SO3 and PO3 graphs would also have
 the same coloring and would be reported as isomorphic.
-So it is necessary to check if the elements in molecules are the same.
+Thus, it is necessary to check if the elements in the molecules are the same.
 
 You may also want to encode other properties in the graph, such as bond orders,
 atom charges and chiralities, as described in
 `this paper <https://jcheminf.biomedcentral.com/articles/10.1186/s13321-023-00692-1>`_.
-Here, we only present a simplified, minimal example.
+Here, we present a simplified, minimal example (and a contrived one -- we don't have
+a real need to use nauty).
 Now, to finish this example, let's get the order of the isomorphism group
 (which should be the same as in the NetworkX example, i.e. 6):
 
@@ -1060,6 +1343,7 @@ Six of the resulting plots are shown here (click to enlarge):
     :align: center
     :scale: 60
 
+
 .. _topology:
 
 Topology
@@ -1067,8 +1351,8 @@ Topology
 
 In gemmi, topology contains restraints *applied* to a model,
 as well as information about the provenance of these restraints,
-and related utilities. (The restraints include bond-distance
-restraints and therefore also bonding information).
+and related utilities. (Since the restraints include bond-distance
+restraints, the topology includes bonding information).
 
 Applied restraints differ from *template* restraints in a monomer library,
 although both are referred to as restraints.
@@ -1082,30 +1366,21 @@ including those with unusual arrangements of alternative conformations,
 the process of determining the topology is quite convoluted.
 
 The typical macromolecular refinement workflow begins by reading
-a coordinate file and a monomer library. The template monomer restraints
+a coordinate file and a monomer library (represented by class
+:ref:`MonLib <monlib>` in gemmi). The template monomer restraints
 from the library (for bond distances, angles, etc.) are applied to monomers,
-and link definitions are matched to explicit and implicit links between
-monomers. Link definitions contain additional restraints and modifications
-to restraints within the linked monomers.
+and link definitions are matched and applied to explicit and implicit links
+between monomers. Link definitions contain additional restraints
+(for the linkages) as well as recipes how to modify the rules
+within the linked monomers.
+This is described in the :ref:`Monomer Library <monlib>` section.
 
-Currently, our topology works only with the monomer library from CCP4.
-This library was introduced in the
-`early 2000s <https://doi.org/10.1107/S0907444904023510>`_.
-Monomer libraries distributed with other popular macromolecular refinement
-programs, PHENIX and BUSTER, are organized somewhat differently
-(geostd from PHENIX is actually quite similar).
 
-The restraints that we use are also similar to what is used
-in molecular dynamics (bond, angle, dihedral and improper dihedral restraints).
-Although the MD potentials have been deemed inadequate for refinement,
-and the restraints in experimental structural biology have been
-improved independently of the restraints in MD,
-they haven't diverged too much and with a little work one could be
-substituted for the other.
 
 When preparing a topology, macromolecular programs (in particular, Refmac)
-may also add hydrogens or shift existing hydrogens to the riding positions.
-And reorder atoms. In Python, we have one function that does it all:
+may also add hydrogens or shift existing hydrogens to riding positions
+(which are defined by the restraints from monomer library).
+And reorder atoms. Gemmi has a high-level function that does it all:
 
 .. code-block:: python
 
@@ -1119,122 +1394,28 @@ And reorder atoms. In Python, we have one function that does it all:
 
 where
 
-* `monlib` is an instance of an undocumented MonLib class.
-  For now, here is an example of how to read the CCP4 monomer library
-  (Refmac dictionary):
-
-  .. code-block:: python
-
-    monlib_path = os.environ['CCP4'] + '/lib/data/monomers'
-    resnames = st[0].get_all_residue_names()
-    monlib = gemmi.read_monomer_lib(monlib_path, resnames)
+* `monlib` is an instance of the :ref:`MonLib <monlib>` class,
 
 * `h_change` can be one of the following:
 
   * HydrogenChange.NoChange -- no change,
-  * HydrogenChange.Shift -- shift existing hydrogens to their ideal (riding) positions,
-  * HydrogenChange.Remove -- remove all H and D atoms,
-  * HydrogenChange.ReAdd -- discard and re-create hydrogens in ideal positions
-    (if the hydrogen position is not uniquely determined, its occupancy is set to zero),
-  * HydrogenChange.ReAddButWater -- the same as above, but doesn't add H in waters,
-  * HydrogenChange.ReAddKnown -- the same as above, but doesn't add any H atoms whose
+  * HydrogenChange.Shift -- shifts existing hydrogens to their ideal (riding) positions,
+  * HydrogenChange.Remove -- removes all H and D atoms,
+  * HydrogenChange.ReAdd -- discards and re-creates hydrogens in ideal positions
+    (if a hydrogen's position is not uniquely determined, its occupancy is set to zero),
+  * HydrogenChange.ReAddButWater -- the same as ReAdd, but doesn't add H in waters,
+  * HydrogenChange.ReAddKnown -- the same as ReAdd, but doesn't add any H atoms whose
     positions are not uniquely determined,
 
 * `reorder` -- changes the order of atoms within each residue
   to match the order in the corresponding monomer cif file,
 
-* `warnings` --  by default, an exception is raised when a chemical component
-  is missing in the monomer library, or when a link is missing,
-  or when the hydrogen adding procedure encounters an unexpected configuration.
-  You can set warnings=sys.stderr to only print a warning to stderr
-  and continue. sys.stderr can be replaced with any object that has
-  the methods `write(str)` and `flush()`.
+* `warnings` -- configures :ref:`Logger <logger>`.
+  By default, an exception is raised when a chemical component
+  or link is missing from the monomer library,
+  or when the hydrogen-adding procedure encounters an unexpected configuration.
+  You can set `warnings=sys.stderr` to print warnings instead,
+  or `warnings=(None, 0)` to suppress all warnings.
 
 
 TBC
-
-.. _pdb_dir:
-
-Local copy of the PDB archive
-=============================
-
-Some of the examples in this documentation work with a local copy
-of the Protein Data Bank archive. This subsection describes
-the assumed setup.
-
-Like in BioJava, we assume that the `$PDB_DIR` environment variable
-points to a directory that contains `structures/divided/mmCIF` -- the same
-arrangement as on the
-`PDB's FTP <ftp://ftp.wwpdb.org/pub/pdb/data/structures/>`_ server.
-
-.. code-block:: console
-
-    $ cd $PDB_DIR
-    $ du -sh structures/*/*  # as of Jun 2017
-    34G    structures/divided/mmCIF
-    25G    structures/divided/pdb
-    101G   structures/divided/structure_factors
-    2.6G   structures/obsolete/mmCIF
-
-A traditional way to keep an up-to-date local archive is to rsync it
-once a week:
-
-.. code-block:: shell
-
-    #!/bin/sh -x
-    set -u  # PDB_DIR must be defined
-    rsync_subdir() {
-      mkdir -p "$PDB_DIR/$1"
-      # Using PDBe (UK) here, can be replaced with RCSB (USA) or PDBj (Japan),
-      # see https://www.wwpdb.org/download/downloads
-      rsync -rlpt -v -z --delete \
-	  rsync.ebi.ac.uk::pub/databases/pdb/data/$1/ "$PDB_DIR/$1/"
-    }
-    rsync_subdir structures/divided/mmCIF
-    #rsync_subdir structures/obsolete/mmCIF
-    #rsync_subdir structures/divided/pdb
-    #rsync_subdir structures/divided/structure_factors
-
-Gemmi has a helper function for using the local archive copy.
-It takes a PDB code (case insensitive) and a symbol denoting what file
-is requested: P for PDB, M for mmCIF, S for SF-mmCIF.
-
-.. doctest::
-
-  >>> os.environ['PDB_DIR'] = '/copy'
-  >>> gemmi.expand_if_pdb_code('1ABC', 'P') # PDB file
-  '/copy/structures/divided/pdb/ab/pdb1abc.ent.gz'
-  >>> gemmi.expand_if_pdb_code('1abc', 'M') # mmCIF file
-  '/copy/structures/divided/mmCIF/ab/1abc.cif.gz'
-  >>> gemmi.expand_if_pdb_code('1abc', 'S') # SF-mmCIF file
-  '/copy/structures/divided/structure_factors/ab/r1abcsf.ent.gz'
-
-If the first argument is not in the PDB code format (4 characters for now)
-the function returns the first argument.
-
-.. doctest::
-
-  >>> arg = 'file.cif'
-  >>> gemmi.is_pdb_code(arg)
-  False
-  >>> gemmi.expand_if_pdb_code(arg, 'M')
-  'file.cif'
-
-Multiprocessing
-===============
-
-(Python-specific)
-
-Most of the gemmi objects cannot be pickled. Therefore, they cannot be
-passed between processes when using the multiprocessing module.
-Currently, the only picklable classes (with protocol >= 2) are:
-UnitCell and SpaceGroup.
-
-Usually, it is possible to organize multiprocessing in such a way that
-gemmi objects are not passed between processes. The example script below
-traverses subdirectories and asynchronously analyzes coordinate files,
-using 4 worker processes in parallel.
-
-.. literalinclude:: ../examples/multiproc.py
-   :language: python
-   :lines: 4-

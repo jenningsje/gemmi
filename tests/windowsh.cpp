@@ -13,6 +13,8 @@
 #endif
 
 #include <windows.h>
+// To check for missing files run:
+// for i in include/gemmi/*.hpp; do grep -qF `basename $i` tests/windowsh.cpp || echo $i; done
 #include <gemmi/addends.hpp>
 #include <gemmi/align.hpp>
 #include <gemmi/assembly.hpp>
@@ -29,7 +31,6 @@
 #include <gemmi/ccp4.hpp>
 #include <gemmi/cellred.hpp>
 #include <gemmi/chemcomp.hpp>
-#include <gemmi/chemcomp_xyz.hpp>
 #include <gemmi/cif.hpp>
 #include <gemmi/cif2mtz.hpp>
 #include <gemmi/cifdoc.hpp>
@@ -59,6 +60,7 @@
 #include <gemmi/json.hpp>
 #include <gemmi/levmar.hpp>
 #include <gemmi/linkhunt.hpp>
+#include <gemmi/logger.hpp>
 #include <gemmi/math.hpp>
 #include <gemmi/metadata.hpp>
 #include <gemmi/mmcif.hpp>
@@ -80,11 +82,9 @@
 #include <gemmi/polyheur.hpp>
 #include <gemmi/qcp.hpp>
 #include <gemmi/read_cif.hpp>
-#include <gemmi/read_map.hpp>
 #include <gemmi/recgrid.hpp>
 #include <gemmi/reciproc.hpp>
 #include <gemmi/refln.hpp>
-#include <gemmi/remarks.hpp>
 #include <gemmi/resinfo.hpp>
 #include <gemmi/riding_h.hpp>
 #include <gemmi/scaling.hpp>
@@ -112,5 +112,6 @@
 #include <gemmi/utf.hpp>
 #include <gemmi/util.hpp>
 #include <gemmi/version.hpp>
+#include <gemmi/xds2mtz.hpp>
 #include <gemmi/xds_ascii.hpp>
 #endif

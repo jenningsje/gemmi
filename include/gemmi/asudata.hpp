@@ -10,6 +10,7 @@
 #include "unitcell.hpp"
 #include "symmetry.hpp"
 #include "stats.hpp"     // for Correlation
+#include "util.hpp"      // for vector_remove_if
 
 namespace gemmi {
 
@@ -95,7 +96,7 @@ int count_equal_values(const std::vector<T>& a, const std::vector<T>& b) {
 
 template<typename T>
 struct HklValue {
-  Miller hkl;
+  alignas(8) Miller hkl;
   T value;
 
   bool operator<(const Miller& m) const { return hkl < m; }
@@ -238,6 +239,15 @@ AsuData<T> make_asu_data(const Data& data, const std::string& label, bool as_is)
   AsuData<T> asu_data;
   asu_data.load_values(data_proxy(data), label, as_is);
   return asu_data;
+}
+
+/// retains only points with positive SIGF and F/SIGF > cutoff
+template<typename T>
+void discard_by_sigma_ratio(AsuData<ValueSigma<T>>& asu_data, double cutoff) {
+  vector_remove_if(asu_data.v, [cutoff](const HklValue<ValueSigma<T>>& p) {
+      auto& v = p.value;
+      return v.sigma <= 0 || v.value <= cutoff * v.sigma;
+  });
 }
 
 } // namespace gemmi

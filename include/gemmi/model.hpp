@@ -1,6 +1,6 @@
 // Copyright 2017 Global Phasing Ltd.
 //
-// Data structures to keep macromolecular structure model.
+// Data structures to store macromolecular structure models.
 
 #ifndef GEMMI_MODEL_HPP_
 #define GEMMI_MODEL_HPP_
@@ -13,7 +13,6 @@
 #include <stdexcept>  // for out_of_range
 #include <string>
 #include <vector>
-#include <unordered_map>
 
 #include "elem.hpp"
 #include "fail.hpp"      // for fail
@@ -30,31 +29,40 @@ namespace gemmi {
 namespace impl {
 
 template<typename T>
-T* find_or_null(std::vector<T>& vec, const std::string& name) {
-  auto it = std::find_if(vec.begin(), vec.end(),
-                         [&name](const T& m) { return m.name == name; });
+auto get_id(const T& m) -> decltype(m.name) { return m.name; }
+template<typename T>
+auto get_id(const T& m) -> decltype(m.num) { return m.num; }
+
+
+template<typename Vec, typename S>
+auto find_iter_(Vec& vec, const S& name) {
+  return std::find_if(vec.begin(), vec.end(), [&name](const auto& m) { return get_id(m) == name; });
+}
+
+template<typename T, typename S>
+T* find_or_null(std::vector<T>& vec, const S& name) {
+  auto it = find_iter_(vec, name);
   return it != vec.end() ? &*it : nullptr;
 }
 
-template<typename T>
-T& find_or_add(std::vector<T>& vec, const std::string& name) {
+template<typename T, typename S>
+T& find_or_add(std::vector<T>& vec, const S& name) {
   if (T* ret = find_or_null(vec, name))
     return *ret;
   vec.emplace_back(name);
   return vec.back();
 }
 
-template<typename Span, typename T = typename Span::value_type>
-typename Span::iterator find_iter(Span& span, const std::string& name) {
-  auto i = std::find_if(span.begin(), span.end(),
-                        [&](const T& x) { return x.name == name; });
-  if (i == span.end())
-    throw std::invalid_argument(
-        T::what() + (" " + name) + " not found (only [" +
-        join_str(span.begin(), span.end(), ' ',
-                 [](const T& x) { return x.name; }) +
-        "])");
-  return i;
+template<typename Span, typename S>
+typename Span::iterator find_iter(Span& span, const S& name) {
+  using T = typename Span::value_type;
+  auto it = find_iter_(span, name);
+  if (it == span.end())
+    throw std::invalid_argument(cat(
+        T::what(), ' ', name, " not found (only [",
+        join_str(span.begin(), span.end(), ' ', [](const T& item) { return cat(get_id(item)); }),
+        "])"));
+  return it;
 }
 
 template<typename Group>
@@ -77,7 +85,9 @@ template<typename T, typename M> std::vector<T> model_subchains(M* model) {
 /// File format of a macromolecular model. When passed to read_structure():
 /// Unknown = guess format from the extension,
 /// Detect = guess format from the content.
-enum class CoorFormat { Unknown, Detect, Pdb, Mmcif, Mmjson, ChemComp };
+enum class CoorFormat : unsigned char {
+  Unknown, Detect, Pdb, Mmcif, Mmjson, ChemComp
+};
 
 /// corresponds to _atom_site.calc_flag in mmCIF
 enum class CalcFlag : signed char {
@@ -90,6 +100,7 @@ enum class CalcFlag : signed char {
 /// options affecting how pdb file is read
 struct PdbReadOptions {
   int max_line_length = 0;
+  bool ignore_ter = false; // ignores TER records completely
   bool split_chain_on_ter = false;
   bool skip_remarks = false;
 };
@@ -278,6 +289,12 @@ struct Residue : public ResidueId {
   ConstUniqProxy<Atom> first_conformer() const { return {atoms}; }
 };
 
+inline void add_distinct_altlocs(const Residue& res, std::string& altlocs) {
+  for (const Atom& atom : res.atoms)
+    if (atom.altloc && altlocs.find(atom.altloc) == std::string::npos)
+      altlocs += atom.altloc;
+}
+
 struct ResidueGroup;
 struct ConstResidueGroup;
 
@@ -330,9 +347,9 @@ struct ConstResidueSpan : Span<const Residue> {
   // We assume residues are ordered. It works (approximately) also with
   // missing numbers which can be present in DBREF.
   SeqId label_seq_id_to_auth(SeqId::OptionalNum label_seq_id) const {
-    if (size() == 0)
+    if (empty())
       throw std::out_of_range("label_seq_id_to_auth(): empty span");
-    auto it = std::lower_bound(begin(), end(), label_seq_id,
+    const auto* it = std::lower_bound(begin(), end(), label_seq_id,
         [](const Residue& r, SeqId::OptionalNum v){ return r.label_seq < v; });
     if (it == end())
       --it;
@@ -346,7 +363,7 @@ struct ConstResidueSpan : Span<const Residue> {
   // The residue numbers (auth) are sometimes not ordered.
   // That is why we use this multi-step heuristic.
   SeqId::OptionalNum auth_seq_id_to_label(SeqId auth_seq_id) const {
-    if (size() == 0)
+    if (empty())
       throw std::out_of_range("auth_seq_id_to_label(): empty span");
     for (const Residue& r : *this)
       if (r.seqid == auth_seq_id)
@@ -469,7 +486,7 @@ struct Chain {
   std::vector<Residue> residues;
 
   Chain() = default;
-  explicit Chain(std::string cname) noexcept : name(cname) {}
+  explicit Chain(const std::string& name_) noexcept : name(name_) {}
 
   ResidueSpan whole() {
     Residue* begin = residues.empty() ? nullptr : &residues[0];
@@ -701,10 +718,11 @@ using ConstCraProxy = CraProxy_<const_CRA, const std::vector<Chain>&>;
 
 struct Model {
   static const char* what() { return "Model"; }
-  std::string name;  // actually an integer number
+  int num = 0;
   std::vector<Chain> chains;
+
   Model() = default;
-  explicit Model(std::string mname) noexcept : name(mname) {}
+  explicit Model(int num_) noexcept : num(num_) {}
 
   // Returns the first chain with given name, or nullptr.
   Chain* find_chain(const std::string& chain_name) {
@@ -843,72 +861,11 @@ struct Model {
     return table;
   }
 
-  CRA get_cra(Atom* atom) { return parent_index.get_cra(*this, atom); }
-  Chain* get_parent_of(Residue* res) { return parent_index.get_parent_of(*this, res); }
-
   // methods present in Structure, Model, ... - used in templates
-  Model empty_copy() const { return Model(name); }
+  Model empty_copy() const { return Model(num); }
   using child_type = Chain;
   std::vector<Chain>& children() { return chains; }
   const std::vector<Chain>& children() const { return chains; }
-
-private:
-  struct ParentIndex {
-    using index_type = std::uint32_t;
-    std::unordered_map<const Atom*, std::array<index_type, 3>> atom_parents;
-    std::unordered_map<const Residue*, std::array<index_type, 2>> residue_parents;
-    void update(const Model& model) {
-      clear();
-      for (index_type ic = 0; ic < model.chains.size(); ++ic) {
-        const Chain& chain = model.chains[ic];
-        for (index_type ir = 0; ir < chain.residues.size(); ++ir) {
-          const Residue& res = chain.residues[ir];
-          residue_parents.emplace(&res, std::array<index_type,2>{ic, ir});
-          for (index_type ia = 0; ia < res.atoms.size(); ++ia)
-            atom_parents.emplace(&res.atoms[ia], std::array<index_type,3>{ic, ir, ia});
-        }
-      }
-    }
-    void clear() {
-      atom_parents.clear();
-      residue_parents.clear();
-    }
-    CRA get_cra(Model& model, Atom* atom) {
-      for (;;) {
-        auto it = atom_parents.find(atom);
-        if (it != atom_parents.end()) {
-          auto ic = it->second[0];
-          auto ir = it->second[1];
-          auto ia = it->second[2];
-          if (ic < model.chains.size()) {
-            Chain& chain = model.chains[ic];
-            if (ir < chain.residues.size()) {
-              Residue& res = chain.residues[ir];
-              if (ia < res.atoms.size() && atom == &res.atoms[ia])
-                return {&chain, &res, atom};
-            }
-          }
-        }
-        update(model);
-      }
-    }
-    Chain* get_parent_of(Model& model, Residue* res) {
-      for (;;) {
-        auto it = residue_parents.find(res);
-        if (it != residue_parents.end()) {
-          auto ic = it->second[0];
-          auto ir = it->second[1];
-          if (ic < model.chains.size()) {
-            Chain& chain = model.chains[ic];
-            if (ir < chain.residues.size() && res == &chain.residues[ir])
-              return &chain;
-          }
-        }
-        update(model);
-      }
-    }
-  };
-  ParentIndex parent_index;
 };
 
 inline Entity* find_entity_of_subchain(const std::string& subchain_id,
@@ -978,23 +935,19 @@ struct Structure {
     return const_cast<Structure*>(this)->first_model();
   }
 
-  Model* find_model(const std::string& model_name) {
-    return impl::find_or_null(models, model_name);
+  Model* find_model(int model_num) {
+    return impl::find_or_null(models, model_num);
   }
-  const Model* find_model(const std::string& model_name) const {
-    return const_cast<Structure*>(this)->find_model(model_name);
+  const Model* find_model(int model_num) const {
+    return const_cast<Structure*>(this)->find_model(model_num);
   }
-  Model& find_or_add_model(const std::string& model_name) {
-    return impl::find_or_add(models, model_name);
-  }
-
-  void remove_model(const std::string& model_name) {
-    models.erase(impl::find_iter(models, model_name));
+  Model& find_or_add_model(int model_num) {
+    return impl::find_or_add(models, model_num);
   }
 
   void renumber_models() {
     for (size_t i = 0; i != models.size(); ++i)
-      models[i].name = std::to_string(i+1);
+      models[i].num = i + 1;
   }
 
   Entity* get_entity(const std::string& ent_id) {
@@ -1052,10 +1005,10 @@ struct Structure {
     return std::any_of(ncs.begin(), ncs.end(), [](const NcsOp& o) { return !o.given; });
   }
 
-  void add_conect_one_way(int serial1, int serial2, int order) {
-    auto& vec = conect_map[serial1];
+  void add_conect_one_way(int serial_a, int serial_b, int order) {
+    auto& vec = conect_map[serial_a];
     for (int i = 0; i < order; ++i)
-      vec.insert(std::upper_bound(vec.begin(), vec.end(), serial2), serial2);
+      vec.insert(std::upper_bound(vec.begin(), vec.end(), serial_b), serial_b);
   }
   void add_conect(int serial1, int serial2, int order) {
     add_conect_one_way(serial1, serial2, order);

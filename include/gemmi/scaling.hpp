@@ -1,12 +1,15 @@
 // Copyright 2020 Global Phasing Ltd.
 //
-// Anisotropic scaling of data (includes scaling of bulk solvent parameters)
+// Anisotropic scaling of data (includes scaling of bulk solvent parameters).
 
 #ifndef GEMMI_SCALING_HPP_
 #define GEMMI_SCALING_HPP_
 
 #include "asudata.hpp"
 #include "levmar.hpp"
+#if WITH_NLOPT
+# include <nlopt.h>
+#endif
 
 namespace gemmi {
 
@@ -92,7 +95,6 @@ struct Scaling {
   double b_sol = 46.0;
   std::vector<Point> points;
 
-  // pre: calc and obs are sorted
   Scaling(const UnitCell& cell_, const SpaceGroup* sg)
       : cell(cell_), constraint_matrix(adp_symmetry_constraints(sg)) {}
 
@@ -148,7 +150,7 @@ struct Scaling {
   }
 
   /// set k_overall, k_sol, b_sol, b_star
-  void set_parameters(const std::vector<double>& p) {
+  void set_parameters(const double* p) {
     k_overall = p[0];
     int n = 0;
     if (use_solvent) {
@@ -169,6 +171,11 @@ struct Scaling {
     }
   }
 
+  void set_parameters(const std::vector<double>& p) {
+    set_parameters(p.data());
+  }
+
+  // pre: all AsuData args are sorted
   void prepare_points(const AsuData<std::complex<Real>>& calc,
                       const AsuData<ValueSigma<Real>>& obs,
                       const AsuData<std::complex<Real>>* mask_data) {
@@ -217,7 +224,7 @@ struct Scaling {
     return p.fcmol + (Real)get_solvent_scale(p.stol2) * p.fmask;
   }
 
-  // quick linear fit (ignoring sigma) to get initial parameters
+  // quick linear fit (ignoring sigma) to get initial k_overall and isotropic B
   void fit_isotropic_b_approximately() {
     double sx = 0, sy = 0, sxx = 0, sxy = 0;
     int n = 0;
@@ -242,6 +249,7 @@ struct Scaling {
     set_b_overall({b_iso, b_iso, b_iso, 0, 0, 0});
   }
 
+  // least-squares fitting of k_overall only
   double lsq_k_overall() const {
     double sxx = 0, sxy = 0;
     for (const Point& p : points) {
@@ -255,71 +263,173 @@ struct Scaling {
     return sxx != 0. ? sxy / sxx : 1.;
   }
 
-  void fit_parameters() {
-    LevMar levmar;
-    levmar.fit(*this);
-  }
-
-
-  // interface for fitting
-  std::vector<double> compute_values() const {
-    std::vector<double> values;
-    values.reserve(points.size());
+  // For testing only, don't use it.
+  // Estimates anisotropic b_star using other parameters (incl. isotropic B),
+  // following P. Afonine et al, doi:10.1107/S0907444913000462 sec. 2.1.
+  // The symmetry constraints are not implemented - don't use it!
+  void fit_b_star_approximately() {
+    double b_iso = 1/3. * get_b_overall().trace();
+    //size_t nc = constraint_matrix.size();
+    double M[36] = {};
+    double b[6] = {};
+    //std::vector<double> Vc(nc);
     for (const Point& p : points) {
       double fcalc = std::abs(get_fcalc(p));
-      values.push_back(fcalc * (Real) get_overall_scale_factor(p.hkl));
+      // the factor 1 / 2 pi^2 will be taken into account later
+      double Z = std::log(p.fobs / (k_overall * fcalc)) + b_iso * p.stol2;
+      Vec3 h(p.hkl);
+      double V[6] = {h.x * h.x, h.y * h.y, h.z * h.z,
+                     2 * h.x * h.y, 2 * h.x * h.z, 2 * h.y * h.z};
+      //for (size_t i = 0; i < nc; ++i)
+      //  Vc[i] = vec6_dot(constraint_matrix[i], V);
+      for (size_t i = 0; i < 6; ++i) {
+        for (size_t j = 0; j < 6; ++j)
+          M[6*i+j] += V[i] * V[j];
+        b[i] -= Z * V[i];
+      }
     }
-    return values;
+    jordan_solve(M, b, 6);
+    double b_star_iso = 1/3. * b_star.trace();
+    SMat33<double> u_star{b[0], b[1], b[2], b[3], b[4], b[5]};
+    // u_to_b() / (2 pi^2) = 8 pi^2 / 2 pi^2 = 4
+    b_star = u_star.scaled(4.0).added_kI(b_star_iso);
+    //auto e = get_b_overall().elements_pdb();
+    //printf("fitted B = {%g %g %g  %g %g %g}\n", e[0], e[1], e[2], e[3], e[4], e[5]);
   }
 
-  // the tile_* parameters allow tiling: computing derivatives from a span
-  // of points at one time, which limits memory usage.
-  void compute_values_and_derivatives(size_t tile_start, size_t tile_size,
-                                      std::vector<double>& yy,
-                                      std::vector<double>& dy_da) const {
-    assert(tile_size == yy.size());
-    size_t npar = dy_da.size() / tile_size;
-    assert(dy_da.size() == npar * tile_size);
-    int n = 1;
-    if (use_solvent)
-      n += int(!fix_k_sol) + int(!fix_b_sol);
-    for (size_t i = 0; i != tile_size; ++i) {
-      const Point& pt = points[tile_start+i];
-      Vec3 h(pt.hkl);
-      double kaniso = std::exp(-0.25 * b_star.r_u_r(h));
-      double fcalc_abs;
-      if (use_solvent) {
-        double solv_b = std::exp(-b_sol * pt.stol2);
-        double solv_scale = k_sol * solv_b;
-        auto fcalc = pt.fcmol + (Real)solv_scale * pt.fmask;
-        fcalc_abs = std::abs(fcalc);
-        size_t offset = i * npar + 1;
-        double dy_dsol = (fcalc.real() * pt.fmask.real() +
-                          fcalc.imag() * pt.fmask.imag()) / fcalc_abs * k_overall * kaniso;
-        if (!fix_k_sol)
-          dy_da[offset++] = solv_b * dy_dsol;
-        if (!fix_b_sol)
-          dy_da[offset] = -pt.stol2 * solv_scale * dy_dsol;
-      } else {
-        fcalc_abs = std::abs(pt.fcmol);
-      }
-      double fe = fcalc_abs * kaniso;
-      yy[i] = k_overall * fe;
-      dy_da[i * npar + 0] = fe; // dy/d k_overall
-      SMat33<double> du = {
-        -0.25 * yy[i] * (h.x * h.x),
-        -0.25 * yy[i] * (h.y * h.y),
-        -0.25 * yy[i] * (h.z * h.z),
-        -0.5 * yy[i] * (h.x * h.y),
-        -0.5 * yy[i] * (h.x * h.z),
-        -0.5 * yy[i] * (h.y * h.z),
-      };
-      double* dy_db = &dy_da[i * npar + n];
-      for (size_t j = 0; j < constraint_matrix.size(); ++j)
-        dy_db[j] = vec6_dot(constraint_matrix[j], du);
+  double fit_parameters() {
+    LevMar levmar;
+    return levmar.fit(*this);
+  }
+
+  double calculate_r_factor() const {
+    double abs_diff_sum = 0;
+    double denom = 0;
+    for (const Point& p : points) {
+      abs_diff_sum += std::fabs(p.fobs - compute_value(p));
+      denom += p.fobs;
     }
+    return abs_diff_sum / denom;
+  }
+
+  // interface for fitting
+  double compute_value(const Point& p) const {
+    return std::abs(get_fcalc(p)) * (Real) get_overall_scale_factor(p.hkl);
+  }
+
+  double compute_value_and_derivatives(const Point& p, std::vector<double>& dy_da) const {
+    Vec3 h(p.hkl);
+    double kaniso = std::exp(-0.25 * b_star.r_u_r(h));
+    double fcalc_abs;
+    int n = 1;
+    if (use_solvent) {
+      double solv_b = std::exp(-b_sol * p.stol2);
+      double solv_scale = k_sol * solv_b;
+      auto fcalc = p.fcmol + (Real)solv_scale * p.fmask;
+      fcalc_abs = std::abs(fcalc);
+      double dy_dsol = (fcalc.real() * p.fmask.real() +
+                        fcalc.imag() * p.fmask.imag()) / fcalc_abs * k_overall * kaniso;
+      if (!fix_k_sol)
+        dy_da[n++] = solv_b * dy_dsol;
+      if (!fix_b_sol)
+        dy_da[n++] = -p.stol2 * solv_scale * dy_dsol;
+    } else {
+      fcalc_abs = std::abs(p.fcmol);
+    }
+    double fe = fcalc_abs * kaniso;
+    double y = k_overall * fe;
+    dy_da[0] = fe; // dy/d k_overall
+    SMat33<double> du = {
+      -0.25 * y * (h.x * h.x),
+      -0.25 * y * (h.y * h.y),
+      -0.25 * y * (h.z * h.z),
+      -0.5 * y * (h.x * h.y),
+      -0.5 * y * (h.x * h.z),
+      -0.5 * y * (h.y * h.z),
+    };
+    for (size_t j = 0; j < constraint_matrix.size(); ++j)
+      dy_da[n+j] = vec6_dot(constraint_matrix[j], du);
+    return y;
   }
 };
+
+// only for testing and evaluation - scaling with NLOpt
+#if WITH_NLOPT
+namespace impl {
+
+template<typename Real>
+double calculate_for_nlopt(unsigned n, const double* x, double* grad, void* data) {
+  auto scaling = static_cast<Scaling<Real>*>(data);
+  scaling->set_parameters(x);
+  if (grad)
+    return compute_gradients(*scaling, n, grad);
+  else
+    return compute_wssr(*scaling);
+}
+
+inline const char* nlresult_to_string(nlopt_result r) {
+  switch (r) {
+    case NLOPT_FAILURE: return "failure";
+    case NLOPT_INVALID_ARGS: return "invalid arguments";
+    case NLOPT_OUT_OF_MEMORY: return "out of memory";
+    case NLOPT_ROUNDOFF_LIMITED: return "roundoff errors limit progress";
+    case NLOPT_FORCED_STOP: return "interrupted";
+    case NLOPT_SUCCESS: return "success";
+    case NLOPT_STOPVAL_REACHED: return "stop-value reached";
+    case NLOPT_FTOL_REACHED: return "ftol-value reached";
+    case NLOPT_XTOL_REACHED: return "xtol-value reached";
+    case NLOPT_MAXEVAL_REACHED: return "max. evaluation number reached";
+    case NLOPT_MAXTIME_REACHED: return "max. time reached";
+    default: return "<unknown result>";
+  }
+  unreachable();
+}
+
+} // namespace impl
+
+template<typename Real>
+double fit_parameters_with_nlopt(Scaling<Real>& scaling, const char* optimizer) {
+  std::vector<double> params = scaling.get_parameters();
+  nlopt_opt opt = nlopt_create(nlopt_algorithm_from_string(optimizer), params.size());
+  {  // prepare bounds
+    std::vector<double> lb(params.size());
+    std::vector<double> ub(params.size());
+    lb[0] = 0.7 * params[0];  // k_ov
+    ub[0] = 1.2 * params[0];
+    size_t n = 1;
+    if (scaling.use_solvent) {
+      if (!scaling.fix_k_sol) {
+        lb[n] = 0.15;
+        ub[n] = 0.5;
+        ++n;
+      }
+      if (!scaling.fix_b_sol) {
+        lb[n] = 10;
+        ub[n] = 80;
+        ++n;
+      }
+    }
+    for (; n < params.size(); ++n) {
+      lb[n] = -0.01;
+      ub[n] = 0.01;
+    }
+    nlopt_set_lower_bounds(opt, lb.data());
+    nlopt_set_upper_bounds(opt, ub.data());
+  }
+  nlopt_set_min_objective(opt, impl::calculate_for_nlopt<Real>, &scaling);
+  nlopt_set_maxeval(opt, 100);
+  double minf = NAN;
+  nlopt_result r = nlopt_optimize(opt, &params[0], &minf);
+  (void) r;
+  //if (r < 0)
+  //  printf("NLopt result: %s\n", impl::nlresult_to_string(r));
+  //else
+  //  printf("NLopt minimum value: %g\n", minf);
+  nlopt_destroy(opt);
+  scaling.set_parameters(params);
+  return minf;
+}
+#endif  // WITH_NLOPT
 
 } // namespace gemmi
 #endif

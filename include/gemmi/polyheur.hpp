@@ -1,7 +1,7 @@
 // Copyright 2017-2018 Global Phasing Ltd.
 //
 // Heuristic methods for working with chains and polymers.
-// Includes also a few well-defined functions, such as removal of waters.
+// Also includes a few well-defined functions, such as removal of waters.
 
 #ifndef GEMMI_POLYHEUR_HPP_
 #define GEMMI_POLYHEUR_HPP_
@@ -155,7 +155,7 @@ template<> inline void assign_het_flags(Residue& res, char flag) {
   flag &= ~0x20; // uppercase letters, ' ' -> \0
   if (flag != 'R' && flag != '\0' && flag != 'A' && flag != 'H')
     fail("assign_het_flags(): the only allowed values are A, H, ' ' and R");
-  res.het_flag = flag == '?' ? recommended_het_flag(res) : flag;
+  res.het_flag = flag == 'R' ? recommended_het_flag(res) : flag;
 }
 
 // Remove waters. It may leave empty chains.
@@ -196,6 +196,8 @@ GEMMI_DLL void restore_full_ccd_codes(Structure& st);
 
 /// Modifies Entity::full_sequence. Uses only the first chain for each Entity.
 GEMMI_DLL void add_microhetero_to_sequences(Structure& st, bool overwrite=false);
+
+GEMMI_DLL void add_tls_group_ids(Structure& st);
 
 } // namespace gemmi
 #endif

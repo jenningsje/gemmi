@@ -114,13 +114,6 @@ class TestSymmetry(unittest.TestCase):
             calculated = gemmi.parse_triplet_part(single)
             self.assertEqual(calculated, row)
 
-    def test_make_triplet_part(self):
-        self.assertEqual(gemmi.make_triplet_part([0, 0, 0], 1),
-                         '1/%d' % gemmi.Op.DEN)
-        for single, row in CANONICAL_SINGLES.items():
-            calculated = gemmi.make_triplet_part(row[:3], row[3])
-            self.assertEqual(calculated, single)
-
     def test_triplet_roundtrip(self):
         singles = list(CANONICAL_SINGLES.keys())
         for i in range(4):
@@ -136,11 +129,14 @@ class TestSymmetry(unittest.TestCase):
 
     def test_triplet_style(self):
         op = gemmi.parse_triplet('A,-B , C')
+        self.assertEqual(op.triplet(), 'a,-b,c')
         self.assertEqual(op.triplet('x'), 'x,-y,z')
         self.assertEqual(op.triplet('a'), 'a,-b,c')
-        self.assertEqual(op.triplet('h'), 'h,-k,l')
         self.assertEqual(op.triplet('X'), 'X,-Y,Z')
         self.assertEqual(op.triplet('A'), 'A,-B,C')
+        op = gemmi.parse_triplet('H,-k , L')
+        self.assertEqual(op.triplet(), 'h,-k,l')
+        self.assertEqual(op.triplet('h'), 'h,-k,l')
         self.assertEqual(op.triplet('H'), 'H,-K,L')
 
     def test_combine(self):
@@ -173,7 +169,7 @@ class TestSymmetry(unittest.TestCase):
         op = gemmi.Op('1/2*x+1/2*y,-1/2*x+1/2*y,z')
         self.assertEqual(op.inverse().triplet(), 'x-y,x+y,z')
         # check also alternative writing
-        op2 = gemmi.Op('x/2+y/2,-a/2+k/2,z')
+        op2 = gemmi.parse_triplet('a/2+b/2,-A/2+b/2,C', notation='a')
         self.assertEqual(op, op2)
 
     def test_rot_type(self):
@@ -235,7 +231,7 @@ class TestSymmetry(unittest.TestCase):
         if sgtbx is None:
             return
         for s in gemmi.spacegroup_table():
-            self.compare_hall_symops_with_sgtbx(s.hall.encode())
+            self.compare_hall_symops_with_sgtbx(s.hall)
         self.compare_hall_symops_with_sgtbx('C -4 -2b', existing_group=False)
 
     def test_table(self):
@@ -325,6 +321,22 @@ class TestSymmetry(unittest.TestCase):
         self.assertEqual(gemmi.find_spacegroup_by_number(5).hm, 'C 1 2 1')
         self.assertEqual(gemmi.SpaceGroup(4005).hm, 'I 1 2 1')
         self.assertIsNone(gemmi.find_spacegroup_by_name('abc'))
+
+    def test_identity(self):
+        # Checks that all functions return a reference, not a copy
+        p1 = gemmi.find_spacegroup_by_number(1)
+        self.assertTrue(gemmi.find_spacegroup_by_name('P1') is p1)
+        #self.assertTrue(gemmi.SpaceGroup(1) is p1)
+        #self.assertTrue(gemmi.SpaceGroup('P 1') is p1)
+        gops = gemmi.GroupOps([gemmi.Op()])
+        self.assertTrue(gemmi.find_spacegroup_by_ops(gops) is p1)
+        self.assertTrue(next(gemmi.spacegroup_table()) is p1)
+        self.assertTrue(next(gemmi.spacegroup_table_itb()) is p1)
+
+        a = gemmi.SpaceGroup("C c c a:1")
+        b = gemmi.SpaceGroup("C c c b:1")
+        self.assertTrue(a == b)
+        self.assertTrue(a is not b)
 
     def test_groupops(self):
         gops = gemmi.GroupOps([gemmi.Op(t) for t in ['x, y, z',

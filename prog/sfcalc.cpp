@@ -277,7 +277,7 @@ void process_with_fft(const gemmi::Structure& st,
   }
   gemmi::StructureFactorCalculator<Table> calc(st.cell);
   calc.addends = dencalc.addends;
-  gemmi::fileptr_t cache(nullptr, nullptr);
+  gemmi::fileptr_t cache(nullptr, gemmi::needs_fclose{false});
   gemmi::AsuData<std::complex<double>> compared_data;
   if (file.path) {
     if (file.mode == RefFile::Mode::Test) {
@@ -301,6 +301,7 @@ void process_with_fft(const gemmi::Structure& st,
       scaling.k_overall = scaling.lsq_k_overall();
       //fprintf(stderr, "initial k_ov=%g\n", scaling.k_overall);
     }
+    //scaling.fit_b_star_approximately();
     scaling.fit_parameters();
     if (scaling.use_solvent)
       fprintf(stderr, "Bulk solvent parameters: k_sol=%g B_sol=%g\n",
@@ -310,10 +311,9 @@ void process_with_fft(const gemmi::Structure& st,
             scaling.k_overall, b_aniso.u11, b_aniso.u22, b_aniso.u33,
                                b_aniso.u12, b_aniso.u13, b_aniso.u23);
     if (verbose) {
-      std::vector<double> computed = scaling.compute_values();
       Comparator comparator;
-      for (size_t i = 0; i != scaling.points.size(); ++i)
-        comparator.add(computed[i], (double)scaling.points[i].fobs);
+      for (const auto& p : scaling.points)
+        comparator.add(scaling.compute_value(p), (double)p.fobs);
       fprintf(stderr, "After scaling: ");
       print_to_stderr(comparator);
       fprintf(stderr, "\n");
@@ -626,12 +626,10 @@ void process_with_table(bool use_st, gemmi::Structure& st, const gemmi::SmallStr
       scale_to.load_values<2>(gemmi::MtzDataProxy{mtz}, {flabel, flabel});
       for (auto& hkl_value : scale_to.v)
         hkl_value.value.sigma = std::sqrt(hkl_value.value.sigma);
-    } else {
+    } else if (sigma_cutoff >= 0) {
       scale_to.load_values<2>(gemmi::MtzDataProxy{mtz}, {flabel, siglabel});
       size_t size_before = scale_to.size();
-      vector_remove_if(scale_to.v, [=](const gemmi::HklValue<gemmi::ValueSigma<Real>>& x) {
-          return x.value.value <= sigma_cutoff * x.value.sigma;
-      });
+      discard_by_sigma_ratio(scale_to, sigma_cutoff);
       if (p.options[Verbose])
         fprintf(stderr, "Sigma cutoff (F/sigF > %g) excluded %zu out of %zu points.\n",
                 sigma_cutoff, size_before - scale_to.size(), size_before);
@@ -661,9 +659,10 @@ void process_with_table(bool use_st, gemmi::Structure& st, const gemmi::SmallStr
         // and on the atomic cutoff radius, and probably it would be too
         // hard to estimate. Here we use the same formula as in Refmac.
         dencalc.set_refmac_compatible_blur(st.models[0]);
-        if (p.options[Verbose])
-          fprintf(stderr, "B_min=%g, B_add=%g\n",
-                  gemmi::get_minimum_b(st.models[0]), dencalc.blur);
+        if (p.options[Verbose]) {
+          double b_min = gemmi::calculate_b_aniso_range(st.models[0]).first;
+          fprintf(stderr, "B_min=%g, B_add=%g\n", b_min, dencalc.blur);
+        }
       }
       gemmi::AtomicRadiiSet radii_choice = gemmi::AtomicRadiiSet::VanDerWaals;
       if (p.options[RadiiSet]) {

@@ -1,7 +1,7 @@
 // Copyright 2017 Global Phasing Ltd.
 
 #include "gemmi/to_cif.hpp"
-#include "gemmi/to_json.hpp"
+#include "gemmi/to_json.hpp"   // for write_json_to_stream
 #include "gemmi/polyheur.hpp"  // for setup_entities, remove_waters, ...
 #include "gemmi/modify.hpp"    // for remove_hydrogens, remove_anisou
 #include "gemmi/align.hpp"     // for assign_label_seq_id
@@ -13,6 +13,7 @@
 #include "gemmi/mmread_gz.hpp" // for read_structure_gz
 #include "gemmi/select.hpp"    // for Selection
 #include "gemmi/enumstr.hpp"   // for polymer_type_to_string
+#include "gemmi/calculate.hpp" // for parse_triplet_as_ftransform
 
 #include <cstring>
 #include <iostream>
@@ -41,6 +42,11 @@ struct ConvArg: public Arg {
     return Arg::Choice(option, msg, {"dup", "num", "x"});
   }
 
+  static option::ArgStatus CoorFormatIn(const option::Option& option, bool msg) {
+    return Choice(option, msg, {"cif", "mmcif", "pdb", "json", "mmjson",
+                                "chemcomp", "chemcomp:m", "chemcomp:i"});
+  }
+
   static option::ArgStatus RecordChoice(const option::Option& option, bool msg) {
     auto status = Arg::Optional(option, msg);
     if (status == option::ARG_OK && option.arg[0] != 'A' && option.arg[0] != 'H') {
@@ -57,26 +63,25 @@ enum OptionIndex {
   FormatIn=AfterCifModOptions, FormatOut, CifStyle, AllAuth, BlockName,
   ExpandNcs, AsAssembly,
   RemoveH, RemoveWaters, RemoveLigWat, TrimAla, Select, Remove, ApplySymop,
-  Reframe, ShortTer, Linkr, CopyRemarks, Minimal, ShortenCN, RenameChain,
+  Reframe, ShortTer, Linkid, Linkr, CopyRemarks, Minimal, ShortenCN, RenameChain,
   ShortenTLC, ChangeCcdCode, SetSeq, SiftsNum,
-  Biso, Anisou, AssignRecords, SetCis, SegmentAsChain, OldPdb, ForceLabel
+  Biso, BisoScale, AddTls, Anisou, AssignRecords,
+  SetCis, SegmentAsChain, OldPdb, ForceLabel
 };
 
 const option::Descriptor Usage[] = {
   { NoOp, 0, "", "", Arg::None,
     "Usage:"
     "\n " EXE_NAME " [options] INPUT_FILE OUTPUT_FILE"
-    "\n\nwith possible conversions between PDB, mmCIF and mmJSON."
-    "\nFORMAT can be specified as one of: mmcif, mmjson, pdb, chemcomp (read-only)."
-    "\nchemcomp = example coordinates of a component from CCD or monomer library."
+    "\n\nAllows conversion between PDB, mmCIF, and mmJSON formats."
     "\n\nGeneral options:" },
   CommonUsage[Help],
   CommonUsage[Version],
   CommonUsage[Verbose],
-  { FormatIn, 0, "", "from", Arg::CoorFormat,
-    "  --from=FORMAT  \tInput format (default: from the file extension)." },
+  { FormatIn, 0, "", "from", ConvArg::CoorFormatIn,
+    "  --from=FORMAT  \tInput format (default: inferred from file extension)." },
   { FormatOut, 0, "", "to", Arg::CoorFormat,
-    "  --to=FORMAT  \tOutput format (default: from the file extension)." },
+    "  --to=FORMAT  \tOutput format (default: inferred from file extension)." },
 
   { NoOp, 0, "", "", Arg::None, "\nmmCIF output options:" },
   { CifStyle, 0, "", "style", Arg::CifStyle,
@@ -94,19 +99,21 @@ const option::Descriptor Usage[] = {
   { SegmentAsChain, 0, "", "segment-as-chain", Arg::None,
     "  --segment-as-chain \tAppend segment id to label_asym_id (chain name)." },
   { OldPdb, 0, "", "old-pdb", Arg::None,
-    "  --old-pdb \tRead only the first 72 characters in line." },
+    "  --old-pdb \tRead only the first 72 characters of each line." },
   { ForceLabel, 0, "L", "force-label", Arg::None,
     "  -L, --force-label  \tAdd label_seq_id even if SEQRES is missing" },
 
   { NoOp, 0, "", "", Arg::None, "\nPDB output options:" },
   { ShortTer, 0, "", "short-ter", Arg::None,
     "  --short-ter  \tWrite PDB TER records without numbers (iotbx compat.)." },
+  { Linkid, 0, "", "Linkid", Arg::None,
+    "  --Linkid  \tWrite link_id instead of disnance in LINK record  if link_id is known." },
   { Linkr, 0, "", "linkr", Arg::None,
     "  --linkr  \tWrite LINKR record (for Refmac) if link_id is known." },
   { CopyRemarks, 0, "", "copy-remarks", Arg::None,
     "  --copy-remarks  \t(pdb->pdb only) Copy REMARK records." },
 
-  { NoOp, 0, "", "", Arg::None, "\nAny output options:" },
+  { NoOp, 0, "", "", Arg::None, "\nGeneral output options:" },
   { Minimal, 0, "", "minimal", Arg::None,
     "  --minimal  \tWrite only the most essential records." },
   { ShortenCN, 0, "", "shorten", Arg::None,
@@ -122,11 +129,14 @@ const option::Descriptor Usage[] = {
     "  -s FILE  \tUse sequence(s) from FILE in PIR or FASTA format. Each chain"
     " is assigned the best matching sequence, if any." },
   { SiftsNum, 0, "", "sifts-num", Arg::Optional,
-    "  --sifts-num[=AC]  \tSet sequence ID to SIFTS-mapped UniProt positions."
-    " In chimeric chains use AC. Adds 5000 to other seqnums." },
+    "  --sifts-num[=AC,...]  \tSet sequence ID to SIFTS-mapped UniProt positions,"
+    " add 5000+ to non-mapped seqnums. See docs for details." },
   { Biso, 0, "B", "", Arg::Required,
-    "  -B MIN[:MAX]  \tSet isotropic B-factors to a single value or change values "
-      "out of given range to MIN/MAX." },
+    "  -B MIN[:MAX]  \tSet isotropic B-factors to a single value or constrain them to a range." },
+  { BisoScale, 0, "", "scale-biso", Arg::Float,
+    "  --scale-biso=MULT  \tMultiply isotropic B-factors by MULT." },
+  { AddTls, 0, "", "add-tls", Arg::None,
+    "  --add-tls  \tconvert from residual to full B-factors." },
   { Anisou, 0, "", "anisou", ConvArg::AnisouChoice,
     "  --anisou=yes|no|heavy  \tAdd or remove ANISOU records." },
   { AssignRecords, 0, "", "assign-records", ConvArg::RecordChoice,
@@ -138,19 +148,18 @@ const option::Descriptor Usage[] = {
 
   { NoOp, 0, "", "", Arg::None, "\nMacromolecular operations:" },
   { Select, 0, "", "select", Arg::Required,
-    "  --select=SEL  \tOutput only the selection." },
+    "  --select=SEL  \tOutput only the specified selection." },
   { Remove, 0, "", "remove", Arg::Required,
-    "  --remove=SEL  \tRemove the selection." },
+    "  --remove=SEL  \tRemove the specified selection." },
   { ApplySymop, 0, "", "apply-symop", Arg::Required,
-    "  --apply-symop=OP  \tApply symmetry operation (e.g. '-x,y+1/2,-z'." },
+    "  --apply-symop=OP  \tApply operation, e.g. '-x,y+1/2,-z' or 'x,y,z+0.1'." },
   { Reframe, 0, "", "reframe", Arg::None,
     "  --reframe  \tStandardize the coordinate system (frame)." },
   { ExpandNcs, 0, "", "expand-ncs", ConvArg::NcsChoice,
-    "  --expand-ncs=dup|num|x  \tExpand strict NCS from in MTRIXn or"
-    " _struct_ncs_oper. New chain names are the same, have added numbers,"
-    " or the shortest unused names are picked."},
+    "  --expand-ncs=dup|num|x  \tExpand strict NCS from MTRIXn or _struct_ncs_oper. "
+    "Argument controls naming of new chains; see docs." },
   { AsAssembly, 0, "", "assembly", Arg::Required,
-    "  --assembly=ID  \tOutput bioassembly with given ID (1, 2, ...)." },
+    "  --assembly=ID  \tOutput bioassembly with specified ID (1, 2, ...)." },
   { RemoveH, 0, "", "remove-h", Arg::None,
     "  --remove-h  \tRemove hydrogens." },
   { RemoveWaters, 0, "", "remove-waters", Arg::None,
@@ -160,6 +169,8 @@ const option::Descriptor Usage[] = {
   { TrimAla, 0, "", "trim-to-ala", Arg::None,
     "  --trim-to-ala  \tTrim aminoacids to alanine." },
   { NoOp, 0, "", "", Arg::None,
+    "\nFORMAT can be specified as one of: mmcif, mmjson, pdb. chemcomp (read-only)."
+    "\nchemcomp = coordinates of a component from CCD or monomer library (see docs)."
     "\nWhen output file is -, write to standard output (default format: pdb)." },
   { 0, 0, 0, 0, 0, 0 }
 };
@@ -188,23 +199,30 @@ std::string read_whole_file(std::istream& stream) {
   return out;
 }
 
-std::uint8_t select_acc_index(const std::vector<std::string>& acc, // Entity::sifts_unp_acc
-                              const gemmi::ConstResidueSpan& polymer,
-                              const std::vector<std::string>& preferred_acs) {
-  if (acc.size() < 2)
-    return 0;
+int select_ac_index(const std::vector<std::string>& acs, // Entity::sifts_unp_acc
+                    const gemmi::ConstResidueSpan& polymer,
+                    const std::vector<std::string>& preferred_acs) {
   for (const std::string& pa : preferred_acs) {
-    auto it = std::find(acc.begin(), acc.end(), pa);
-    if (it != acc.end())
-      return std::uint8_t(it - acc.begin());
+    if (pa == "=")
+      return -2;
+    if (acs.empty())
+      continue;
+    if (pa == "*") {
+      // return SIFTS mapping with most residues
+      std::vector<int> counts(acs.size(), 0);
+      for (const gemmi::Residue& res : polymer)
+        if (res.sifts_unp.res && res.sifts_unp.acc_index < acs.size())
+          ++counts[res.sifts_unp.acc_index];
+      auto max_el = std::max_element(counts.begin(), counts.end());
+      if (*max_el > 0)
+        return int(max_el - counts.begin());
+    } else {
+      auto it = std::find(acs.begin(), acs.end(), pa);
+      if (it != acs.end())
+        return int(it - acs.begin());
+    }
   }
-  // return SIFTS mapping with most residues
-  std::vector<int> counts(acc.size(), 0);
-  for (const gemmi::Residue& res : polymer)
-    if (res.sifts_unp.res && res.sifts_unp.acc_index < acc.size())
-      ++counts[res.sifts_unp.acc_index];
-  auto max_el = std::max_element(counts.begin(), counts.end());
-  return std::uint8_t(max_el - counts.begin());
+  return -1;
 }
 
 // Set seqid corresponding to one UniProt sequence.
@@ -212,35 +230,45 @@ std::uint8_t select_acc_index(const std::vector<std::string>& acc, // Entity::si
 void to_sifts_num(gemmi::Structure& st, const std::vector<std::string>& preferred_acs) {
   using Key = std::pair<std::string, gemmi::SeqId>;
   std::map<Key, gemmi::SeqId> seqid_map;
-  bool first_model = true;
+
+  // find new sequence IDs and store them in seqid_map
+  std::map<std::string, uint16_t> chain_offsets;
   for (gemmi::Model& model: st.models) {
     for (gemmi::Chain& chain : model.chains) {
       auto polymer = chain.get_polymer();
       gemmi::Entity* ent = st.get_entity_of(polymer);
-      std::uint8_t acc_index = 0;
+      int ac_index = -1;
       if (ent)
-        acc_index = select_acc_index(ent->sifts_unp_acc, polymer, preferred_acs);
-      std::uint16_t offset = 4950;
-      for (gemmi::Residue& res : chain.residues) {
-        if (res.sifts_unp.res && res.sifts_unp.acc_index == acc_index) {
-          // assert(ent && res.entity_id == ent->name);
-          gemmi::SeqId new_seqid(res.sifts_unp.num, ' ');
-          if (first_model)
+        ac_index = select_ac_index(ent->sifts_unp_acc, polymer, preferred_acs);
+      std::uint16_t max_unp_num = 0;
+      // first pass - set seqid_map for AC-corresponding residues
+      if (ac_index >= 0)
+        for (gemmi::Residue& res : chain.residues) {
+          if (res.sifts_unp.res && (int) res.sifts_unp.acc_index == ac_index) {
+            // assert(ent && res.entity_id == ent->name);
+            gemmi::SeqId new_seqid(res.sifts_unp.num, ' ');
             seqid_map.emplace(std::make_pair(chain.name, res.seqid), new_seqid);
-          res.seqid = new_seqid;
-          offset = std::max(offset, res.sifts_unp.num);
+            res.seqid = new_seqid;
+            max_unp_num = std::max(max_unp_num, res.sifts_unp.num);
+          }
         }
+      // retrieve or (for a new chain) store the offset for non-AC residues
+      auto result = chain_offsets.emplace(chain.name, 0);
+      std::uint16_t& offset = result.first->second;
+      if (result.second && ac_index != -2) {
+        if (max_unp_num <= 4950)
+          offset = 5000;
+        else
+          offset = (max_unp_num + 1049) / 1000 * 1000;  // N * 1000, N > 5
       }
-      offset = (offset + 50) / 1000 * 1000;  // always >= 5000
+      // second pass - set seqid_map for non-AC residues
       for (gemmi::Residue& res : chain.residues)
-        if (!res.sifts_unp.res || res.sifts_unp.acc_index != acc_index) {
+        if (!res.sifts_unp.res || res.sifts_unp.acc_index != ac_index) {
           gemmi::SeqId orig_seqid = res.seqid;
           res.seqid.num += offset;
-          if (first_model)
-            seqid_map.emplace(std::make_pair(chain.name, orig_seqid), res.seqid);
+          seqid_map.emplace(std::make_pair(chain.name, orig_seqid), res.seqid);
         }
     }
-    first_model = false;
   }
 
   auto update_seqid = [&](const std::string& chain_name, gemmi::SeqId& seqid) {
@@ -258,11 +286,27 @@ void to_sifts_num(gemmi::Structure& st, const std::vector<std::string>& preferre
       dbref.seq_begin = dbref.seq_end = gemmi::SeqId();
 }
 
+// simplified check, can return false positives
+bool is_uniprot_ac_format(const std::string& ac) {
+  return ac.size() >= 6 && ac[0] >= 'A' && ac[0] <= 'Z' && ac[1] >= '0' && ac[1] <= '9';
+}
+
+const gemmi::TlsGroup*
+get_tls_group_by_id(const std::vector<gemmi::TlsGroup>& tls_groups, short num_id) {
+  if (size_t(num_id - 1) < tls_groups.size() && tls_groups[num_id - 1].num_id == num_id)
+    return &tls_groups[num_id - 1];
+  for (const gemmi::TlsGroup& tg : tls_groups)
+    if (tg.num_id == num_id)
+      return &tg;
+  return nullptr;
+}
+
 void convert(gemmi::Structure& st,
              const std::string& output, CoorFormat output_type,
              const std::vector<option::Option>& options) {
   if (st.models.empty())
-    gemmi::fail("No atoms in the input file. Wrong file format?");
+    gemmi::fail("No atoms in the input (", format_as_string(st.input_format), ") file. "
+                "Wrong file format?");
   if (st.ter_status == 'e')
     std::cerr << "WARNING: TER records in the input PDB are clearly where they shouldn't be."
                  "\nWARNING: Ignoring all TER records." << std::endl;
@@ -303,25 +347,49 @@ void convert(gemmi::Structure& st,
   if (st.models.empty())
     gemmi::fail("all models got removed");
   if (options[ApplySymop]) {
-    gemmi::Op op = gemmi::parse_triplet(options[ApplySymop].arg);
-    transform_pos_and_adp(st, st.cell.op_as_transform(op));
+    gemmi::FTransform frac_tr = gemmi::parse_triplet_as_ftransform(options[ApplySymop].arg);
+    transform_pos_and_adp(st, st.cell.orthogonalize_transform(frac_tr));
   }
+
   if (options[Reframe])
     standardize_crystal_frame(st);
 
+  if (options[BisoScale]) {
+    double mult = std::atof(options[BisoScale].arg);
+    for (gemmi::Model& model: st.models)
+      for (gemmi::Chain& chain : model.chains)
+        for (gemmi::Residue& res : chain.residues)
+          for (gemmi::Atom& atom : res.atoms)
+            atom.b_iso = float(atom.b_iso * mult);
+  }
+
   if (options[Biso]) {
-    const char* start = options[Biso].arg;
-    char* endptr = nullptr;
-    float value1 = std::strtof(start, &endptr);
-    float value2 = value1;
-    if (endptr != start && *endptr == ':') {
-      start = endptr + 1;
-      value2 = std::strtof(start, &endptr);
-    }
-    if (endptr != start && *endptr == '\0')
-      assign_b_iso(st, value1, value2);
-    else
+    float value1, value2;
+    bool ok = parse_number_or_range(options[Biso].arg, &value1, &value2);
+    if (!ok)
       gemmi::fail("argument for -B should be a number or number:number");
+    assign_b_iso(st, value1, value2);
+  }
+
+  if (options[AddTls]) {
+    const std::vector<gemmi::TlsGroup>* tls_groups = st.meta.get_tls_groups();
+    if (!tls_groups)
+      return;
+    gemmi::add_tls_group_ids(st);
+    for (gemmi::Model& model: st.models)
+      for (gemmi::Chain& chain : model.chains)
+        for (gemmi::Residue& res : chain.residues)
+          for (gemmi::Atom& atom : res.atoms) {
+            if (atom.aniso.nonzero())
+              continue;
+            if (const gemmi::TlsGroup* tg = get_tls_group_by_id(*tls_groups, atom.tls_group_id)) {
+              gemmi::SMat33<double> u = gemmi::calculate_u_from_tls(*tg, atom.pos)
+                                        .added_kI(1. / gemmi::u_to_b() * atom.b_iso);
+              atom.aniso = {(float)u.u11, (float)u.u22, (float)u.u33,
+                            (float)u.u12, (float)u.u13, (float)u.u23};
+              atom.b_iso = float(gemmi::u_to_b() / 3. * u.trace());
+            }
+          }
   }
 
   for (const option::Option* opt = options[Anisou]; opt; opt = opt->next()) {
@@ -392,18 +460,20 @@ void convert(gemmi::Structure& st,
     if (opt->arg) {
       gemmi::split_str_into(opt->arg, ',', preferred_acs);
       for (const std::string& ac : preferred_acs)
-        if (ac.size() < 6 || ac[0] < 'A' || ac[0] > 'Z' || ac[1] < '0' || ac[1] > '9')
+        if (ac != "*" && ac != "=" && !is_uniprot_ac_format(ac))
           gemmi::fail(ac + " is not in UniProtKB AC format, from: " + opt->name);
+    } else {
+      preferred_acs.emplace_back("*");
     }
     to_sifts_num(st, preferred_acs);
   }
 
   HowToNameCopiedChain how = HowToNameCopiedChain::AddNumber;
-  if (output_type == CoorFormat::Pdb)
+  if (output_type == CoorFormat::Pdb || options[ShortenCN])
     how = HowToNameCopiedChain::Short;
   if (options[AsAssembly]) {
-    std::ostream* out = options[Verbose] ? &std::cerr : nullptr;
-    gemmi::transform_to_assembly(st, options[AsAssembly].arg, how, out);
+    gemmi::Logger logger{&gemmi::Logger::to_stderr, options[Verbose] ? 6 : 3};
+    gemmi::transform_to_assembly(st, options[AsAssembly].arg, how, logger);
   }
 
   if (options[ExpandNcs]) {
@@ -463,9 +533,7 @@ void convert(gemmi::Structure& st,
     if (output_type == CoorFormat::Mmcif) {
       write_cif_to_stream(os.ref(), doc, cif_write_options(options[CifStyle]));
     } else /*output_type == CoorFormat::Mmjson*/ {
-      cif::JsonWriter writer(os.ref());
-      writer.set_mmjson();
-      writer.write_json(doc);
+      cif::write_mmjson_to_stream(os.ref(), doc);
     }
   } else if (output_type == CoorFormat::Pdb) {
     gemmi::PdbWriteOptions opt;
@@ -473,6 +541,8 @@ void convert(gemmi::Structure& st,
       opt = gemmi::PdbWriteOptions::minimal();
     if (options[ShortTer])
       opt.numbered_ter = false;
+    if (options[Linkid])
+      opt.use_link_id = true;
     if (options[Linkr])
       opt.use_linkr = true;
     gemmi::write_pdb(st, os.ref(), opt);
@@ -520,7 +590,16 @@ int GEMMI_MAIN(int argc, char **argv) {
       options.max_line_length = 72;
       st = gemmi::read_pdb_gz(input, options);
     } else {
-      st = gemmi::read_structure_gz(input, in_type);
+      if (in_type == CoorFormat::ChemComp) {
+        int which = 7;
+        // chemcomp:m or chemcomp:i
+        if (p.options[FormatIn].arg && std::strlen(p.options[FormatIn].arg) > 9)
+          // cf. ChemCompModel
+          which = p.options[FormatIn].arg[9] == 'i' ? 4 : 2;
+        st = gemmi::read_structure_from_chemcomp_gz(input, nullptr, which);
+      } else {
+        st = gemmi::read_structure_gz(input, in_type);
+      }
     }
     convert(st, output, out_type, p.options);
   } catch (std::runtime_error& e) {

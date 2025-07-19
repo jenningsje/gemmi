@@ -4,11 +4,12 @@ Reciprocal space
 
 This section is primarily for people working with crystallographic data.
 
-Gemmi supports three reflection file formats:
+Gemmi supports four reflection file formats:
 
 * MTZ files -- the most popular format in macromolecular crystallography,
 * structure factor mmCIF files -- used for data archiving
   in the Protein Data Bank,
+* XDS ASCII format -- data from processing images with XDS,
 * and small molecule structure factor CIF files (usually with extension hkl).
 
 Reflection files store Miller indices (*hkl*) with various associated
@@ -17,13 +18,9 @@ diffraction images (reflection intensities and error estimates).
 Then other quantities derived from these are added,
 as well as quantities derived from a macromolecular model
 that is built to explain the experimental data.
-
 Even electron density maps, which are used in the real space, are nowadays
 stored mostly as map coefficients in reflection files.
-Molecular viewers can Fourier-transform them on the fly and show
-in the real space. Therefore, switching between the real and reciprocal space
-is also included in Gemmi, as well as calculation of structure factors
-from the model.
+Molecular viewers :ref:`Fourier-transform <fft>` them on the fly.
 
 MTZ format
 ==========
@@ -61,12 +58,20 @@ In C++, the MTZ file can be read using either stand-alone functions::
 or member functions of the Mtz class, when more control over the reading
 process is needed.
 
-In Python, we have a single function for reading MTZ files:
+In Python, there is a single function for reading MTZ files:
 
 .. doctest::
 
   >>> import gemmi
   >>> mtz = gemmi.read_mtz_file('../tests/5e5z.mtz')
+
+The option `with_data=False` is for rare cases when only metadata
+(unit cell, history lines, etc) is needed.
+
+.. doctest::
+
+  >>> gemmi.read_mtz_file('../tests/5e5z.mtz', with_data=False)
+  <gemmi.Mtz with 8 columns, 441 reflections>
 
 class Mtz
 ---------
@@ -114,7 +119,7 @@ Datasets are stored in the variable `datasets`::
 .. doctest::
 
   >>> mtz.datasets
-  MtzDatasets[<gemmi.Mtz.Dataset 0 HKL_base/HKL_base/HKL_base>, <gemmi.Mtz.Dataset 1 5e5z/5e5z/1>]
+  gemmi.MtzDatasets([<gemmi.Mtz.Dataset 0 HKL_base/HKL_base/HKL_base>, <gemmi.Mtz.Dataset 1 5e5z/5e5z/1>])
 
 In the MTZ file, each dataset is identified internally by an integer
 "dataset ID". To get dataset with the specified ID use function::
@@ -243,8 +248,8 @@ In both C++ and Python `Column` supports the iteration protocol:
 
   >>> [x for x in intensity if x > 100]
   [124.25700378417969, 100.08699798583984, 216.60499572753906]
-  >>> numpy.nanmean(intensity)
-  11.505858
+  >>> numpy.nanmean(intensity)  # doctest: +ELLIPSIS
+  11.505858...
 
 
 Data
@@ -291,7 +296,7 @@ Unmerged (multi-record) MTZ files store a list of batches::
   std::vector<Mtz::Batch> Mtz::batches
 
 .. doctest::
-  :skipif: mdm2_unmerged_mtz_path is None
+  :skipif: ccp4_path is None
 
   >>> # here we use mdm2_unmerged.mtz file distributed with CCP4 7.1
   >>> mdm2 = gemmi.read_mtz_file(mdm2_unmerged_mtz_path)
@@ -301,7 +306,7 @@ Unmerged (multi-record) MTZ files store a list of batches::
 Each batch has a number of properties:
 
 .. doctest::
-  :skipif: mdm2_unmerged_mtz_path is None
+  :skipif: ccp4_path is None
 
   >>> batch = mdm2.batches[0]
   >>> batch.number
@@ -319,7 +324,7 @@ Most of the batch header properties are not decoded,
 but they can be accessed directly if needed:
 
 .. doctest::
-  :skipif: mdm2_unmerged_mtz_path is None
+  :skipif: ccp4_path is None
 
   >>> list(batch.ints)
   [185, 29, 156, 0, -1, 1, -1, 0, 0, 0, 0, 0, 1, 0, 2, 1, 0, 1, 0, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0]
@@ -332,7 +337,7 @@ indices it stores indices of the equivalent reflection in the ASU
 It can be useful to switch between the two:
 
 .. doctest::
-  :skipif: mdm2_unmerged_mtz_path is None
+  :skipif: ccp4_path is None
 
   >>> mdm2.switch_to_original_hkl()
   True
@@ -349,12 +354,6 @@ to a file.
 
 Data in NumPy and pandas
 ------------------------
-
-.. doctest::
-  :skipif: numpy is None
-  :hide:
-
-  >>> numpy.set_printoptions(threshold=5)
 
 In Python Column has a read-only `array` property that provides
 a view of the data compatible with NumPy. It does not copy the data,
@@ -392,15 +391,6 @@ It provides access to all the MTZ data as 2D NumPy array
   >>> mtz.array.shape
   (441, 8)
 
-Another way to access MTZ data in Python is through the
-`buffer protocol <https://docs.python.org/3/c-api/buffer.html>`_.
-For example, here is equivalent of `mtz.array`:
-
-.. doctest::
-  :skipif: numpy is None
-
-  >>> all_data = numpy.array(mtz, copy=False)
-
 It helps to have labels on the columns. A good data structure for this
 is Pandas DataFrame:
 
@@ -408,7 +398,7 @@ is Pandas DataFrame:
   :skipif: pandas is None
 
   >>> import pandas
-  >>> df = pandas.DataFrame(data=all_data, columns=mtz.column_labels())
+  >>> df = pandas.DataFrame(data=mtz.array, columns=mtz.column_labels())
   >>> # now we can handle columns using their labels:
   >>> I_over_sigma = df['I'] / df['SIGI']
 
@@ -428,8 +418,8 @@ Another way to get Miller indices as a N×3 array of integers is:
   >>> hkl = mtz.make_miller_array()
 
 The same method is available also in ReflnBlock (which represents SF-mmCIF
-and is described in a later section). Similarly, :ref:`AsuData <asu_data>`
-has a property `miller_array`.
+and is described in a later section). Similarly, :ref:`XdsAscii <xds_ascii>`
+and :ref:`AsuData <asu_data>` have a property `miller_array`.
 
 There is also a standalone function `make_miller_array()`
 that returns all reflections in a resolution shell.
@@ -522,6 +512,18 @@ To show that it really has an effect we print the appropriate
   >>> mtz.set_data(mtz.array[mtz.make_d_array() >= 2.0])
   >>> mtz.get_size_for_hkl()
   [10, 10, 20]
+
+We also have a function `filtered` that works like `set_data` in the example
+above, but returns **a copy** of `Mtz`, leaving the original object unchanged.
+`filtered` takes a NumPy array of boolean values and returns reflections
+corresponding to `True`. Here is how to get of a copy of Mtz with only
+reflections with *d* ≥ 2Å.
+
+.. doctest::
+  :skipif: numpy is None
+
+  >>> mtz.filtered(mtz.make_d_array() >= 2.0)
+  <gemmi.Mtz with 8 columns, 262 reflections>
 
 Columns can be removed with `Mtz::remove_column(index)`,
 where index is 0-based column index:
@@ -666,7 +668,8 @@ We can also start the file history:
 
 `mtz.history` in Python is a property that gets a copy of the C++ data.
 Changing it (for example, `mtz.history.append()`) won't affect the original data.
-Only assignment works: `mtz.history = ...` or `mtz.history += ...`.
+Only assignment works: `mtz.history = [line1, line2, ...]`
+or `mtz.history += ['appended item']`.
 
 To update properties `min_1_d2` and `max_1_d2` call `update_reso()`:
 
@@ -690,17 +693,19 @@ Reindexing, ASU, sorting, ...
 The reindexing function changes:
 
 * Miller indices of reflections
-  (if new indices would be fractional the reflection is removed),
+  (if the new indices would be fractional, the reflection is removed),
 * space group,
 * unit cell parameters (in MTZ records CELL and DCELL, and in batch headers).
 
-Reindexing takes as an argument the operator that is to be applied
-to Miller indices. In Python, it returns a textual message for the user:
+Reindexing takes an operator that is applied to the Miller indices.
+Information about the operation is passed to a :ref:`Logger <logger>`.
 
 .. doctest::
 
+  >>> mtz.set_logging(sys.stdout)
   >>> mtz.reindex(gemmi.Op('k,l,h'))
-  'Real space transformation: y,z,x\nSpace group changed from P 21 21 2 to P 21 2 21.\n'
+  Real space transformation: z,x,y
+  Space group changed from P 21 21 2 to P 21 2 21.
 
 If reindex() is called on merged data,
 it should be followed by a call to ensure_asu().
@@ -782,15 +787,20 @@ using one of the functions::
   void Mtz::write_to_file(const std::string& path) const
   void Mtz::write_to_string(std::string& str) const
 
-In Python we have a single function for writing to a file:
+In Python we have functions for writing to a file and to a memory
+buffer that's returned as `bytes`:
 
 .. doctest::
 
   >>> mtz.write_to_file('output.mtz')
+  >>> type(mtz.write_to_bytes())
+  <class 'bytes'>
 
 Here is a complete C++ example how to create a new MTZ file:
 
 .. literalinclude:: code/newmtz.cpp
+
+.. _sf_mmcif:
 
 SF mmCIF
 ========
@@ -834,7 +844,7 @@ Blocks are moved from the Document to the new list:
   >>> doc
   <gemmi.cif.Document with 0 blocks ()>
   >>> rblocks
-  ReflnBlocks[<gemmi.ReflnBlock r5wkdsf with 17 x 406 loop>]
+  gemmi.ReflnBlocks([<gemmi.ReflnBlock r5wkdsf with 17 x 406 loop>])
 
 When ReflnBlock is created some of the mmCIF tags are interpreted
 to initialize the following properties:
@@ -851,21 +861,29 @@ to initialize the following properties:
   >>> rblock.wavelength
   0.9791
 
-To check if block has either merged or unmerged data, in C++ use function
-`ok()`, and in Python:
+To check if block has either merged or unmerged data, call:
 
-.. doctest::
+.. tab:: C++
 
-  >>> bool(rblock)
-  True
+ ::
+
+  bool has_some_data = rblock.ok();
+
+.. tab:: Python
+
+ .. doctest::
+
+    >>> bool(rblock)
+    True
+
 
 Normally, one block has only one type of data, merged and unmerged.
 Which one is used can be checked with the function:
 
 .. doctest::
 
-  >>> rblock.is_unmerged()
-  False
+  >>> rblock.is_merged()
+  True
 
 But it is syntactically correct to have both types of data in two tables
 in one block. In such case you can switch which table is used:
@@ -890,7 +908,7 @@ Finally, ReflnBlock has functions for working with the data table::
 
   std::vector<double> ReflnBlock::make_d_vector() const
 
-We will describe these functions while going through its Python equivalents.
+We will describe these functions while going through their Python equivalents.
 `column_labels()` returns list of tags associated with the columns,
 excluding the category part. Unlike in the MTZ format, here the tags
 must be unique.
@@ -964,7 +982,7 @@ into a single DataFrame:
 
 .. literalinclude:: ../examples/merge_mtz_mmcif.py
   :language: python
-  :lines: 4-28
+  :lines: 4-26
 
 We want to compare the FP column from the MTZ file and the F_meas_au column
 from mmCIF. We start with plotting one against the other:
@@ -975,7 +993,7 @@ from mmCIF. We start with plotting one against the other:
 
 .. literalinclude:: ../examples/merge_mtz_mmcif.py
   :language: python
-  :lines: 31-38
+  :lines: 29-36
 
 The numbers are similar, but not exactly equal.
 Let us check how the difference between the two values depends on the
@@ -989,12 +1007,12 @@ so we can use it for coloring.
 
 .. literalinclude:: ../examples/merge_mtz_mmcif.py
   :language: python
-  :lines: 41-
+  :lines: 39-
 
 Apparently, some scaling has been applied. The scaling is anisotropic
 and is the strongest along the *k* axis.
 
-MTZ <-> mmCIF
+MTZ ↔ mmCIF
 =============
 
 The library contains classes that facilitate conversions:
@@ -1017,6 +1035,123 @@ program documentation for details.
   >>> # and convert it back
   >>> cif_string = gemmi.MtzToCif().write_cif_to_string(_)
 
+`Cif2Mtz.convert_block_to_mtz()` optionally takes :ref:`Logger <logger>`
+as a second argument.
+
+.. _xds_ascii:
+
+XDS_ASCII
+=========
+
+XDS ascii files (often with names such as XDS_ASCII.HKL, INTEGRATE.HKL,
+or xscale.ahkl) are represented in Gemmi by the `XdsAscii` class.
+They can be read with:
+
+.. tab:: C++
+
+ ::
+
+  #include <gemmi/xds_ascii.hpp>
+
+  gemmi::XdsAscii xds = gemmi::read_xds_file(path);
+
+.. tab:: Python
+
+ .. doctest::
+
+    >>> xds = gemmi.read_xds_ascii('../tests/INTEGRATE-tiny.HKL')
+    >>> xds
+    <gemmi.XdsAscii object at 0x...>
+
+As with other file formats, gzipped files are uncompressed on the fly.
+
+Items from the file headers are stored in XdsAscii member variables
+(although not everything is stored and not everything stored
+is accessible from Python). For instance, this line:
+
+.. code-block:: none
+
+  !ROTATION_AXIS= -0.999996  0.002745 -0.000291
+
+is stored as:
+
+.. doctest::
+
+  >>> xds.rotation_axis
+  <gemmi.Vec3(-0.999996, 0.002745, -0.000291)>
+
+Reflection data is stored in `XdsAscii::data`.
+Currently, we store only data from the columns H, K, L, ISET,
+IOBS, SIGMA, XD/XCAL, YD/YCAL, ZD/ZCAL, RLP, PEAK, CORR, and MAXC.
+
+In C++, the data is accessible directly.
+In Python, it is exposed as NumPy arrays:
+
+.. doctest::
+  :skipif: numpy is None
+
+  >>> xds.miller_array
+  array([[-24,   9,   1],
+         [-24,  10,   4],
+         [-23,   4,  -4],
+         ...,
+         [ 24,  -9,   0],
+         [ 24,  -9,   1],
+         [ 24,  -9,   2]], dtype=int32)
+
+  >>> xds.zd_array
+  array([111.7, 116.1, 102.5, ...,  73. ,  71.5,  70. ])
+
+Additionally, Python bindings have the function `filtered` that takes a NumPy
+array of boolean values and returns a copy of `XdsAscii` containing only
+reflections corresponding to `True`. For example:
+
+.. doctest::
+  :skipif: numpy is None
+
+  >>> xds.filtered(xds.zd_array < 200)
+  <gemmi.XdsAscii object at 0x...>
+
+leaves only reflections with ZD < 200.
+
+The XdsAscii class has a couple functions related to orientation matrices.
+They are used, for instance, to convert from the XDS frame to the "Cambridge"
+frame when converting an XDS file to an MTZ file.
+To learn more about it, inspect the code.
+
+The function `apply_polarization_correction()` updates the
+`polarization correction <https://github.com/project-gemmi/gemmi/discussions/248>`_
+from `INTEGRATE.HKL` files, assuming they have been corrected by XDS
+for an unpolarized incident beam.
+It aims to do the same as the `POLARIZATION` keyword in `Aimless`.
+
+XdsAscii cannot be written to a file (so far, we've had no need to write XDS
+files), but it can be converted to MTZ:
+
+.. tab:: C++
+
+ ::
+
+  #include <gemmi/xds2mtz.hpp>
+
+  gemmi::Mtz mtz = gemmi::xds_to_mtz(xds);
+
+.. tab:: Python
+
+ .. doctest::
+
+  >>> xds.to_mtz()
+  <gemmi.Mtz with 15 columns, ... reflections>
+
+.. note::
+
+  To just convert an XDS file to MTZ, use the command-line program
+  :ref:`gemmi xds2mtz <gemmi-xds2mtz>`.
+
+
+It can also be used to populate `Intensities` -- a class
+used for merging data, among other things.
+This is described in a later :ref:`section <intensities>`.
 
 SX hkl CIF
 ==========
@@ -1055,124 +1190,7 @@ as a text value of _shelx_hkl_file:
      0   0  -1   20.09    0.73
      0   0   1   19.76    0.73
 
-
-.. _intensities:
-
-Intensity merging
-=================
-
-TBD
-
-
-.. _asu_data:
-
-AsuData: merged reflections
-===========================
-
-AsuData is an array of symmetry-unique Miller indices and values.
-
-In C++, in principle, the values can be of any type.
-
-In Python, we have separate classes for different value types:
-IntAsuData, FloatAsuData, ComplexAsuData, ValueSigmaAsuData.
-The last one is for a pair of numbers, typically a float value
-with associated sigma.
-
-Such an array can be created in two ways:
-
-1. From reflection data read from an MTZ or SF-mmCIF file, for example:
-
-  .. doctest::
-
-    >>> mtz.get_value_sigma('F', 'SIGF')  #doctest:+ELLIPSIS
-    <gemmi.ValueSigmaAsuData with ... values>
-
-  Examples of functions giving other AsuData classes were given
-  in an :ref:`example above <example_with_asudata>`.
-
-  The choice of ASU differs between programs. By default, reflections
-  in AsuData are moved to the :ref:`ASU used in CCP4 <reciprocal_asu>`
-  and sorted. If you want to keep original Miller indices and the order
-  from the file, add parameter `as_is=True`. You can also switch the indices
-  and sort reflections using separate functions:
-
-  .. doctest::
-
-    >>> asu_data = mtz.get_value_sigma('F', 'SIGF', as_is=True)
-    >>> asu_data.ensure_asu()
-    >>> asu_data.ensure_sorted()
-    >>> asu_data  #doctest:+ELLIPSIS
-    <gemmi.ValueSigmaAsuData with ... values>
-
-2. From a reciprocal-space grid, which will be introduced in the next section:
-
-  .. doctest::
-
-    >>> grid = rblock.get_f_phi_on_grid('pdbx_FWT', 'pdbx_PHWT', [54,6,18])
-    >>> asu_data = grid.prepare_asu_data(dmin=1.8, with_000=False, with_sys_abs=False)
-    >>> asu_data
-    <gemmi.ComplexAsuData with 407 values>
-
-  Arguments of the `prepare_asu_data` function are optional.
-  By default, the resolution is not limited, the (000) reflection is not
-  included and systematic absences are also not included.
-
-Each item in AsuData has two properties, hkl and value:
-
-.. doctest::
-
-  >>> asu_data[158]
-  <gemmi.ComplexHklValue (-6,2,5) (-1.37694,-0.190087)>
-  >>> _.hkl, _.value
-  ([-6, 2, 5], (-1.376941204071045-0.19008657336235046j))
-
-Both Miller indices and values can be accessed as NumPy arrays:
-
-.. doctest::
-  :skipif: numpy is None or sys.platform == 'win32'
-
-  >>> asu_data.miller_array
-  array([[-26,   0,   1],
-         [-26,   0,   2],
-         [-26,   0,   3],
-         ...,
-         [ 25,   1,   0],
-         [ 26,   0,   0],
-         [ 26,   0,   1]], dtype=int32)
-  >>> asu_data.value_array[158:159]
-  array([-1.3769412-0.19008657j], dtype=complex64)
-
-AsuData has several methods common with Mtz and ReflnBlock:
-
-.. doctest::
-  :skipif: numpy is None
-
-  >>> asu_data.get_size_for_hkl()
-  [54, 6, 18]
-  >>> asu_data.get_size_for_hkl(sample_rate=3.0)  # explained in the next section
-  [90, 8, 30]
-  >>> asu_data.data_fits_into([54,6,18])
-  True
-  >>> asu_data.make_1_d2_array()
-  array([0.268129  , 0.26766333, 0.27679217, ..., 0.30102324, 0.27818915,
-         0.2978438 ], dtype=float32)
-  >>> asu_data.make_d_array()
-  array([1.9312037, 1.9328829, 1.9007417, ..., 1.8226361, 1.8959632,
-         1.8323385], dtype=float32)
-
-The data can be edited as two NumPy arrays and then copied into new AsuData
-object. In this example we exclude low-resolution data:
-
-.. doctest::
-  :skipif: numpy is None
-
-  >>> d = asu_data.make_d_array()
-  >>> gemmi.ComplexAsuData(asu_data.unit_cell,
-  ...                      asu_data.spacegroup,
-  ...                      asu_data.miller_array[d<8],
-  ...                      asu_data.value_array[d<8])
-  <gemmi.ComplexAsuData with 399 values>
-
+.. _binner:
 
 Resolution bins
 ===============
@@ -1223,7 +1241,7 @@ The unit cell and the upper bin boundaries (in Å\ :sup:`--2`) are stored intern
   >>> binner.cell
   <gemmi.UnitCell(50.347, 4.777, 14.746, 90, 101.73, 90)>
   >>> binner.limits  # doctest: +ELLIPSIS
-  [0.12224713046942721, 0.19395414269012246, 0.254107666379415..., inf]
+  [0.122247130469427..., 0.193954142690122..., 0.254107666379415..., inf]
   >>> binner.size  # number of bins
   4
 
@@ -1268,7 +1286,9 @@ ReflnBlock, array of Miller indices or array of *d*:sup:`--2`:
   >>> binner.get_bins_from_1_d2(mtz.make_1_d2_array())
   array([3, 3, 3, ..., 3, 3, 3], dtype=int32)
 
-These are all Binner's functions.
+Using bins with NumPy
+---------------------
+
 Now we will show how the bin numbers can be used.
 First, let use `numpy.bincount()` to find out how many reflections
 are in each bin.
@@ -1284,7 +1304,7 @@ are in each bin.
   bin 1 d= 24.648 - 2.860  count: 108
   bin 2 d=  2.860 - 2.271  count: 86
   bin 3 d=  2.271 - 1.984  count: 93
-  bin 4 d=  1.984 - 0.000  count: 80
+  bin 4 d=  1.984 - 1.802  count: 80
 
 Now let's calculate R\ :sub:`work` and R\ :sub:`free` of the whole dataset.
 
@@ -1327,7 +1347,7 @@ mean *F*:sub:`obs`/σ. We can use bincount with weights for this:
 .. doctest::
   :skipif: numpy is None
 
-  >>> numpy.bincount(bins, weights=fo/sigma) / numpy.bincount(bins) 
+  >>> numpy.bincount(bins, weights=fo/sigma) / numpy.bincount(bins)
   array([17.45109335, 14.27616408, 11.48073644,  9.47130558])
 
 The bincount function here would not handle correctly NaNs, and it can perform
@@ -1406,6 +1426,332 @@ One can calculate % of free reflections in shells as:
   >>> 100. * counts[n:] / counts[:n]
   array([6.93069307, 3.61445783, 9.41176471, 5.26315789])
 
+Normalizing amplitudes
+----------------------
+
+One of the uses of resolution bins is normalization of amplitudes F->E.
+Gemmi implements the "Karle" approach, similarly to CCP4 ECALC.
+Function `calculate_amplitude_normalizers()` returns multipliers for all
+reflections. The amplitudes can then be normalized by multiplying the value
+of both the amplitude and its associated sigma by the corresponding multiplier.
+
+.. tab:: C++
+
+ ::
+
+  #include <gemmi/ecalc.hpp>
+
+  template<typename DataProxy>
+  std::vector<double> calculate_amplitude_normalizers(const DataProxy& data, int fcol_idx, const Binner& binner);
+
+.. tab:: Python
+
+ .. doctest::
+  :skipif: numpy is None
+
+  >>> gemmi.calculate_amplitude_normalizers(mtz, 'FP', binner)
+  array([0.02100878, 0.02097921, 0.02157962, ..., 0.02023182, 0.02190913,
+         0.02167374])
+
+(All the values above are similar because reflections at the beginning
+and at the end of the list have similar *d* spacing.)
+
+.. note::
+
+  Normalized amplitudes E can be added to an MTZ file using the command-line
+  program :ref:`gemmi ecalc <gemmi-ecalc>`.
+
+.. _intensities:
+
+Intensities
+===========
+
+Class `Intensities` stores reflection intensities with associated sigmas.
+It can contain multi-record (unmerged), anomalous, or mean intensity data.
+It is used for merging unmerged data, calculating merging statistics
+(quality metrics such as CC\ :sub:`1/2` or the infamous R-merge)
+and correlations between datasets.
+
+Intensities take data from classes corresponding to reflection file formats:
+`Mtz`, `ReflnBlock` or `XdsAscii`.
+
+.. tab:: C++
+
+ ::
+
+  void import_mtz(const Mtz& mtz, DataType data_type=DataType::Unknown)
+  void import_refln_block(const ReflnBlock& rb, DataType data_type=DataType::Unknown)
+  void import_xds(const XdsAscii& xds)
+
+.. tab:: Python
+
+ .. code-block:: python
+
+  def import_mtz(self, arg0: Mtz, type: DataType = DataType.Unknown) -> None: ...
+  def import_xds(self, arg: XdsAscii, /) -> None: ...
+  def import_refln_block(self, arg0: ReflnBlock, type: DataType = DataType.Unknown) -> None: ...
+
+Since `Mtz` and `ReflnBlock` may contain more than one set of intensities
+(typically mean and anomalous, though `ReflnBlock` could hypothetically contain
+unmerged data together with merged), we specify the data type to import
+using one of the `DataType` enumeration values:
+
+* `Unmerged`,
+* `Mean`,
+* `Anomalous`,
+* `MergedMA` -- Mean if available, otherwise Anomalous
+* `MergedAM` -- Anomalous if available, otherwise Mean
+* `UAM` -- in the order: Unmerged, Anomalous, Mean
+* `Unknown` -- in the order: Mean, Anomalous, Unmerged
+
+After importing, `Intensities::type` is set to one of `DataType::Unmerged`,
+`DataType::Mean`, or `DataType::Anomalous`.
+
+.. doctest::
+  :skipif: ccp4_path is None
+
+  >>> intensities = gemmi.Intensities()
+  >>> intensities.import_mtz(mdm2)
+  >>> intensities.type
+  DataType.Unmerged
+
+If you like, you can call `remove_systematic_absences()`,
+which does exactly that.
+
+.. doctest::
+  :skipif: ccp4_path is None
+
+  >>> intensities.remove_systematic_absences()
+
+To merge unmerged or anomalous data, call:
+
+.. tab:: C++
+
+ ::
+
+  void merge_in_place(DataType new_type);
+
+.. tab:: Python
+
+ .. doctest::
+  :skipif: ccp4_path is None
+
+  >>> intensities.merge_in_place(new_type=gemmi.DataType.Anomalous)
+
+You can merge unmerged data with `new_type` being either `Mean` or `Anomalous`.
+If you have anomalous data, you can merge it into mean.
+
+.. doctest::
+  :skipif: ccp4_path is None
+
+  >>> intensities.type
+  DataType.Anomalous
+  >>> len(intensities)
+  57590
+  >>> intensities.merge_in_place(gemmi.DataType.Mean)
+  >>> intensities.type
+  DataType.Mean
+  >>> len(intensities)
+  33965
+
+Before merging the data, we can call `calculate_merging_stats()` to obtain
+quality metrics. This function doesn't take `new_type` as an arg.
+Instead, call `prepare_for_merging(new_type)` before
+`calculate_merging_stats()`.
+
+.. doctest::
+  :skipif: ccp4_path is None
+
+  >>> intensities = gemmi.Intensities()
+  >>> intensities.import_mtz(mdm2)
+  >>> intensities.prepare_for_merging(gemmi.DataType.Mean)
+  DataType.Mean
+  >>> intensities.calculate_merging_stats(binner=None)
+  [<gemmi.MergingStats object at 0x...>]
+
+The first argument of `calculate_merging_stats` is :ref:`Binner <binner>`.
+If we pass `None`, it returns overall statistics.
+
+Returned `MergingStats` contain the following metrics:
+
+.. doctest::
+  :skipif: ccp4_path is None
+
+  >>> stats = _[0]
+  >>> stats.r_merge()
+  0.220415748...
+  >>> stats.r_meas()
+  0.262633829...
+  >>> stats.r_pim()
+  0.140663599...
+  >>> stats.cc_half()
+  0.959152511...
+  >>> stats.cc_star()
+  0.989520302...
+
+`calculate_merging_stats()` also has an optional argument `use_weights`
+that decides if and how sigmas are used for weighting. It can be one of:
+
+* `'Y'` (default) -- R-metrics are weighted as in Aimless and MRFANA,
+  for example:
+
+  .. image:: img/rmerge-2006.png
+
+* `'N'` -- no weighting, as in the original formulas:
+
+  .. image:: img/rmerge-1997.png
+
+* `'X'` -- R-metrics are weighted as in XDS and cctbx (the numerator
+  is weighted like in the first formula, while the denominator is not).
+
+Links to papers and additional details are given in the documentation
+of :ref:`gemmi merge <gemmi-merge-metrics>`.
+
+If we want the metrics in resolution shells, we need to prepare a Binner:
+
+.. doctest::
+  :skipif: ccp4_path is None
+
+  >>> binner = gemmi.Binner()
+  >>> binner.setup(10, gemmi.Binner.Method.Dstar3, intensities)
+  >>> bin_stats = intensities.calculate_merging_stats(binner, use_weights='N')
+  >>> len(bin_stats)
+  10
+
+Now we can print, for instance, CC\ :sub:`1/2` and CC* in shells:
+
+.. doctest::
+  :skipif: ccp4_path is None
+
+  >>> for n, stats in enumerate(bin_stats):
+  ...   dmax, dmin = binner.dmax_of_bin(n), binner.dmin_of_bin(n)
+  ...   print(f'{dmax:5.2f} - {dmin:4.2f} {stats.cc_half():6.3f} {stats.cc_star():6.3f}')
+  ...
+  61.93 - 2.68  0.945  0.986
+   2.68 - 2.13  0.925  0.980
+   2.13 - 1.86  0.873  0.966
+   1.86 - 1.69  0.816  0.948
+   1.69 - 1.57  0.552  0.843
+   1.57 - 1.48  0.229  0.611
+   1.48 - 1.40  0.056  0.326
+   1.40 - 1.34  0.041  0.280
+   1.34 - 1.29  0.112  0.449
+   1.29 - 1.25 -0.098    nan
+
+.. note::
+
+  To merge data from the command line, use :ref:`gemmi merge <gemmi-merge>`.
+
+
+.. _asu_data:
+
+AsuData: merged reflections
+===========================
+
+AsuData is an array of symmetry-unique Miller indices and values.
+
+In C++, in principle, the values can be of any type.
+
+In Python, we have separate classes for different value types:
+IntAsuData, FloatAsuData, ComplexAsuData, ValueSigmaAsuData.
+The last one is for a pair of numbers, typically a float value
+with associated sigma.
+
+Such an array can be created in two ways:
+
+1. From reflection data read from an MTZ or SF-mmCIF file, for example:
+
+  .. doctest::
+
+    >>> mtz.get_value_sigma('FP', 'SIGFP')  #doctest:+ELLIPSIS
+    <gemmi.ValueSigmaAsuData with ... values>
+
+  Examples of functions giving other AsuData classes were given
+  in an :ref:`example above <example_with_asudata>`.
+
+  The choice of ASU differs between programs. By default, reflections
+  in AsuData are moved to the :ref:`ASU used in CCP4 <reciprocal_asu>`
+  and sorted. If you want to keep original Miller indices and the order
+  from the file, add parameter `as_is=True`. You can also switch the indices
+  and sort reflections using separate functions:
+
+  .. doctest::
+
+    >>> asu_data = mtz.get_value_sigma('FP', 'SIGFP', as_is=True)
+    >>> asu_data.ensure_asu()
+    >>> asu_data.ensure_sorted()
+    >>> asu_data  #doctest:+ELLIPSIS
+    <gemmi.ValueSigmaAsuData with ... values>
+
+2. From a reciprocal-space grid, which will be introduced in the next section:
+
+  .. doctest::
+
+    >>> grid = rblock.get_f_phi_on_grid('pdbx_FWT', 'pdbx_PHWT', [54,6,18])
+    >>> asu_data = grid.prepare_asu_data(dmin=1.8, with_000=False, with_sys_abs=False)
+    >>> asu_data
+    <gemmi.ComplexAsuData with 407 values>
+
+  Arguments of the `prepare_asu_data` function are optional.
+  By default, the resolution is not limited, the (000) reflection is not
+  included and systematic absences are also not included.
+
+Each item in AsuData has two properties, hkl and value:
+
+.. doctest::
+
+  >>> asu_data[158]
+  <gemmi.ComplexHklValue (-6,2,5) (-1.376941204071045-0.19008657336235046j)>
+  >>> _.hkl, _.value
+  ([-6, 2, 5], (-1.376941204071045-0.19008657336235046j))
+
+Both Miller indices and values can be accessed as NumPy arrays:
+
+.. doctest::
+  :skipif: numpy is None or sys.platform == 'win32'
+
+  >>> asu_data.miller_array
+  array([[-26,   0,   1],
+         [-26,   0,   2],
+         [-26,   0,   3],
+         ...,
+         [ 25,   1,   0],
+         [ 26,   0,   0],
+         [ 26,   0,   1]], dtype=int32)
+  >>> asu_data.value_array[158:159]
+  array([-1.3769412-0.19008657j], dtype=complex64)
+
+AsuData has several methods common with Mtz and ReflnBlock:
+
+.. doctest::
+  :skipif: numpy is None
+
+  >>> asu_data.get_size_for_hkl()
+  [54, 6, 18]
+  >>> asu_data.get_size_for_hkl(sample_rate=3.0)  # explained in the next section
+  [90, 8, 30]
+  >>> asu_data.data_fits_into([54,6,18])
+  True
+  >>> asu_data.make_1_d2_array()
+  array([0.268129  , 0.26766333, 0.27679217, ..., 0.30102324, 0.27818915,
+         0.2978438 ], dtype=float32)
+  >>> asu_data.make_d_array()
+  array([1.9312037, 1.9328829, 1.9007417, ..., 1.8226361, 1.8959632,
+         1.8323385], dtype=float32)
+
+The data can be edited as two NumPy arrays and then copied into new AsuData
+object. In this example we exclude low-resolution data:
+
+.. doctest::
+  :skipif: numpy is None
+
+  >>> d = asu_data.make_d_array()
+  >>> gemmi.ComplexAsuData(asu_data.unit_cell,
+  ...                      asu_data.spacegroup,
+  ...                      asu_data.miller_array[d<8],
+  ...                      asu_data.value_array[d<8])
+  <gemmi.ComplexAsuData with 399 values>
+
 
 Reciprocal-space grid
 =====================
@@ -1456,8 +1802,7 @@ To check if the size is big enough you can call:
   >>> rblock.data_fits_into([52,6,18])
   False
 
-To access the data you can use either the buffer protocol
-(:ref:`in the same way <buffer_protocol>` as in the Grid class),
+To access the data you can use either the NumPy interface (`grid.array`),
 or getter and setter:
 
 .. doctest::
@@ -1571,8 +1916,7 @@ tool.
 
   >>> size = rblock.get_size_for_hkl(sample_rate=2.6)
   >>> full = rblock.get_f_phi_on_grid('pdbx_FWT', 'pdbx_PHWT', size)
-  >>> array = numpy.array(full, copy=False)
-  >>> complex_map = numpy.fft.ifftn(array.conj())
+  >>> complex_map = numpy.fft.ifftn(full.array.conj())
   >>> scale_factor = complex_map.size / full.unit_cell.volume
   >>> real_map = numpy.real(complex_map) * scale_factor
   >>> round(real_map[1][2][3], 5)
@@ -1590,8 +1934,7 @@ using complex-to-real FFT on a half of the data:
   :skipif: numpy is None
 
   >>> half = rblock.get_f_phi_on_grid('pdbx_FWT', 'pdbx_PHWT', size, half_l=True)
-  >>> array = numpy.array(half, copy=False)
-  >>> real_map = numpy.fft.irfftn(array.conj()) * scale_factor
+  >>> real_map = numpy.fft.irfftn(half.array.conj()) * scale_factor
   >>> round(real_map[1][2][3], 5)
   -0.40554
   >>> round(real_map.std(), 5)
@@ -1645,8 +1988,7 @@ The grid can be accessed as NumPy 3D array:
 .. doctest::
   :skipif: numpy is None
 
-  >>> array = numpy.array(_, copy=False)
-  >>> round(array.std(), 5)
+  >>> round(_.array.std(), 5)
   0.66338
 
 .. _map_from_rblock:
@@ -1701,583 +2043,3 @@ This script converts CCP4 map to MTZ file with map coefficients.
 .. literalinclude:: ../examples/map2mtz.py
   :language: python
   :lines: 4-
-
-
-Scattering factors
-==================
-
-X-ray form factors
-------------------
-
-The X-ray scattering contribution from an isolated atom is described by the
-atomic form factor. Nowadays, two form factor parametrizations are commonly
-used: one from the International Tables of Crystallography Vol. C
-(4 Gaussians + constant factor), and the other from Waasmaier & Kirfel (1995),
-`Acta Cryst. A51, 416 <https://doi.org/10.1107/S0108767394013292>`_
-(5 Gaussians).
-Other parametrizations exist (for example, with only two Gaussians),
-but are not widely used.
-
-Currently, Gemmi includes only the ITC parametrization.
-
-In C++, the form factor coefficients are listed in the :file:`it92.hpp` header.
-In Python, these coefficients can be accessed as a property of an element
-(only coefficients for neutral atoms):
-
-.. doctest::
-
-  >>> gemmi.Element('Fe').it92  #doctest: +ELLIPSIS
-  <gemmi.IT92Coef object at 0x...>
-  >>> gemmi.Element('Es').it92  # -> None (no parametrization for Einsteinium)
-
-or by using the function IT92_get_exact() that takes an element and a charge
-as arguments and returns None if this exact atom or ion is absent in the table.
-
-The charges listed in a coordinates file might not be reliable in determining
-the scattering of an atom, so by default, we use coefficients for neutral atoms
-regardless of the formal charge. To use coefficients for ions, you need to first
-change ``IT92::ignore_charge``:
-
-.. doctest::
-
-  >>> gemmi.IT92_set_ignore_charge(False)
-  >>> gemmi.IT92_get_exact(gemmi.Element('Mg'), +2)  # for Mg2+ #doctest: +ELLIPSIS
-  <gemmi.IT92Coef object at 0x...>
-
-You can get the coefficients as numbers:
-
-.. doctest::
-
-  >>> fe_coef = gemmi.Element('Fe').it92
-  >>> fe_coef.a
-  [11.7695, 7.3573, 3.5222, 2.3045]
-  >>> fe_coef.b
-  [4.7611, 0.3072, 15.3535, 76.8805]
-  >>> fe_coef.c
-  1.0369
-
-The *a*'s and *c* should sum up to the number of electrons (*Z* - *charge*),
-but the numbers from the Tables may differ slightly:
-
-.. doctest::
-
-  >>> gemmi.Element('Fe').atomic_number
-  26
-  >>> sum(fe_coef.a) + fe_coef.c  # doctest: +ELLIPSIS
-  25.9904...
-
-Some programs (Refmac) normalize the coefficients,
-which means multiplying them by a factor between 0.99995 and 1.00113.
-
-.. doctest::
-
-  >>> # let's store the original values first
-  >>> orig_coefs = {i : gemmi.Element(i).it92.get_coefs() for i in range(1, 99)}
-  >>> # now we normalize the values
-  >>> gemmi.IT92_normalize()
-  >>> # and we can see that the values has changed
-  >>> fe_coef.a  # doctest: +ELLIPSIS
-  [11.7738..., 7.3600..., 3.5235..., 2.30535...]
-
-Now let's use function `set_coefs()` to change the coefficients back
-to the original values (for neutral atoms):
-
-.. doctest::
-
-  >>> for i in range(1, 99):
-  ...     gemmi.Element(i).it92.set_coefs(orig_coefs[i])
-
-
-Macromolecular models may have unknown atoms (UNK)
-with element specified as X. By default, we use oxygen's coefficients for X,
-but you may change it (as well as coefficients of any other atom):
-
-.. doctest::
-
-  >>> c_coefs = gemmi.Element('C').it92.get_coefs()
-  >>> gemmi.Element('X').it92.set_coefs(c_coefs)
-
-The coefficients can be used to directly calculate the sum of Gaussians --
-the structure factor contribution:
-
-.. doctest::
-  :skipif: numpy is None
-
-  >>> fe_coef.calculate_sf(stol2=0.4)  # argument: (sin(theta)/lambda)^2
-  9.303603172302246
-
-The large number of reflections in macromolecular crystallography makes direct
-calculation of structure factors inefficient. Instead, we can calculate electron
-density on a grid and use FFT to obtain structure factors.
-In the simplest case, the atom's contribution to the electron density at a grid
-point can be calculated as:
-
-.. doctest::
-  :skipif: numpy is None
-
-  >>> # arguments are distance^2 and isotropic ADP
-  >>> fe_coef.calculate_density_iso(r2=2.3, B=50)
-  0.5279340744018555
-
-The C++ interface provides more functions to calculate the electron density.
-We have separate functions to work with isotropic and anisotropic ADPs.
-And for efficiency, the computations are split into two stages: the first one is
-performed once per atom, the second one -- for each nearby grid point.
-
-In the usual scenario, we add *f'* (the real component of anomalous
-scattering -- see the next section) to the constant coefficient *c*.
-
-.. _anomalous:
-
-Anomalous scattering
---------------------
-
-The anomalous dispersion is wavelength dependent.
-Gemmi provides function `cromer_liberman` that calculates
-real and imaginary components *f'* and *f"*
-for isolated atoms from Z=3 to Z=92.
-
-As the name suggests, we use the Cromer-Liberman algorithm.
-This algorithm, as is noted on the
-`pyFprime website <https://subversion.xray.aps.anl.gov/trac/pyFprime/>`_,
-"fails in computing *f'* for wavelengths < 0.16 Å (> 77.48 keV)
-for the heaviest elements (Au-Cf)
-and fails to correctly compute *f'*, *f"* and *μ*
-for wavelengths > 2.67 Å (< 4.64 keV) for very heavy elements (Am-Cf)."
-
-The implementation is contained in a single C++ header file
-:file:`fprime.hpp` with no dependencies.
-All the data is embedded in the code.
-The binary size after compilation is about 100kB.
-
-Reportedly, the data tables synthesised by C.T. Chantler are more accurate.
-Consider using them instead. They are available from the
-`NIST website <https://www.nist.gov/pml/x-ray-form-factor-attenuation-and-scattering-tables>`_
-and from the `XrayDB <https://github.com/xraypy/XrayDB>`_ project.
-
-The code in :file:`fprime.hpp` is based on the X-ray spectroscopy project
-`Larch <https://xraypy.github.io/xraylarch/>`_
-and should give the same results as the
-`f1f2_cl <https://xraypy.github.io/xraylarch/xray/index.html#_xray.f1f2_cl>`_
-function there. The Fortran code in Larch is, in turn, based on the
-`Brennan and Cowan <https://aip.scitation.org/doi/10.1063/1.1142625>`_
-routines. Which, in turn, were based on the
-`original program <https://doi.org/10.1107/S0021889883010791>`_
-from Don Cromer. Along the way, the code was extensively modified.
-Importantly, the Jensen correction has been removed (as is recommended
-in the chapter 4.2.6 of `ITvC <https://it.iucr.org/Cb/contents/>`_)
-and the `Kissel and Pratt (1990) <https://doi.org/10.1107/S0108767389010718>`_
-correction has been added.
-Therefore, it gives different results than the
-`crossec <http://legacy.ccp4.ac.uk/html/crossec.html>`_ program,
-which was contributed to CCP4 directly by Don Cromer in the 1990's.
-
-The `cromer_liberman` function is available in both C++ and Python:
-
-.. doctest::
-
-  >>> gemmi.Element('Se').atomic_number
-  34
-  >>> gemmi.cromer_liberman(z=_, energy=10332.0) # energy in eV  #doctest: +ELLIPSIS
-  (-1.41862..., 0.72389...)
-  >>> # use gemmi.hc to convert wavelength [A] to energy [eV]
-  >>> gemmi.cromer_liberman(z=34, energy=gemmi.hc/0.71073)  #doctest: +ELLIPSIS
-  (-0.09201..., 2.23336...)
-
-The same values can be printed from the command line program
-:ref:`gemmi-fprime <fprime>`.
-
-
-Electron form factors
----------------------
-
-The electron form factors are parametrized as 5 Gaussians,
-using coefficients from International Tables for Crystallography
-Volume C, edition 2011, table 4.3.2.2 (pp. 282-283),
-"Elastic atomic scattering factors of electrons for neutral atoms
-and *s* up to 2.0 A\ :sup:`--1`".
-The same parametrization is used in cctbx and in CCP4.
-
-In gemmi, were refer to these coefficients as C4322 (after the volume and
-table number in the International Tables).
-For C++, the form factor coefficients are tabulated
-in the :file:`c4322.hpp` header.
-In Python, they can be accessed as a property of an element:
-
-.. doctest::
-
-  >>> fe_coef = gemmi.Element('Fe').c4322
-  >>> fe_coef.a
-  [0.3946, 1.2725, 1.7031, 2.314, 1.4795]
-  >>> fe_coef.b
-  [0.2717, 2.0443, 7.6007, 29.9714, 86.2265]
-
-and, similarly to the X-ray coefficients, they can be used to calculate
-structure factors and density:
-
-.. doctest::
-
-  >>> fe_coef.calculate_sf(stol2=0.4)  # argument: (sin(theta)/lambda)^2
-  0.9971507787704468
-  >>> fe_coef.calculate_density_iso(r2=2.3, B=50)
-  0.13794779777526855
-
-Unlike for X-ray form factors, we do not add anomalous scattering here.
-
-Neutron scattering
-------------------
-
-For neutrons, we use bound coherent scattering lengths
-`from NCNR <https://www.ncnr.nist.gov/resources/n-lengths/list.html>`_,
-which are based on Neutron News, Vol. 3, No. 3, 1992.
-
-In C++, this data is in the :file:`neutron92.hpp` header.
-In Python, it can be accessed as a property of an element:
-
-.. doctest::
-
-  >>> h_neut = gemmi.Element('H').neutron92
-  >>> h_neut.get_coefs()  # bound coherent scat. length in fm (10^-15 m)
-  [-3.739]
-  >>> h_neut.calculate_sf(0)  # the argument is ignored
-  -3.739
-  >>> h_neut.calculate_density_iso(r2=1.3, B=25)
-  -0.17104358254308388
-
-We don't store data for individual isotopes, except for deuterium.
-
-.. doctest::
-
-  >>> gemmi.Element('D').neutron92.get_coefs()
-  [6.671]
-
-
-Direct summation
-----------------
-
-Gemmi has functions to calculate structure factor by direct summation
-of structure factors from individual atoms. This route is not commonly used
-in macromolecular crystallography and it was implemented primarily to check
-the accuracy of FFT-based computations. Therefore, the efficiency was not
-a priority here. In particular, space group specific optimizations, described
-by `Bourhis et al (2014) <https://doi.org/10.1107/S2053273314022207>`_,
-are not included.
-
-In Python classes StructureFactorCalculatorX and StructureFactorCalculatorE
-perform direct summation using X-ray and electron form factors, respectively.
-Class StructureFactorCalculatorN does calculations for neutrons.
-The C++ interface is similar, although it uses a single templated class
-StructureFactorCalculator.
-These classes are constructed with UnitCell as a parameter (we don't pass
-SpaceGroup because UnitCell already contains a list of symmetry operations).
-
-.. doctest::
-
-  >>> st = gemmi.read_structure('../tests/4oz7.pdb')
-  >>> calc_e = gemmi.StructureFactorCalculatorE(st.cell)
-
-Now we can compute structure factors from Model for any (hkl):
-
-.. doctest::
-
-  >>> calc_e.calculate_sf_from_model(st[0], (3,4,5))  #doctest: +ELLIPSIS
-  (54.50873...+53.39498...j)
-
-Similarly, for small molecules:
-
-.. doctest::
-  :skipif: sys.platform == 'win32'
-
-  >>> small = gemmi.read_small_structure('../tests/1011031.cif')
-  >>> small.change_occupancies_to_crystallographic()
-  >>> calc_x = gemmi.StructureFactorCalculatorX(small.cell)
-  >>> calc_x.calculate_sf_from_small_structure(small, (0,2,4))
-  (17.849694728851315-6.557871454633539e-15j)
-
-For each atom, the Debye-Waller factor (used in the structure factor
-calculation) is obtained using either isotropic or anisotropic ADPs
-(B-factors). If anisotropic ADPs are non-zero, isotropic ADP is ignored.
-
-.. _addends:
-
-Addends
-~~~~~~~
-
-StructureFactorCalculator contains also addends -- per-element values
-that are to be added to the form factor coefficient *c*
-(which is the same as adding it to the total atomic contribution
-to the structure factor):
-
-.. doctest::
-
-  >>> calc_x = gemmi.StructureFactorCalculatorX(st.cell)
-  >>> calc_x.addends  #doctest: +ELLIPSIS
-  <gemmi.Addends object at 0x...>
-
-When calculating X-ray structure factors, one may want to include *f'*
-(real part of the :ref:`anomalous scattering <anomalous>`).
-To do this, *f'* needs to be set for each element present in the system:
-This is done with function `set_addend()`, which sets angle-independent
-value that will be added to the value calculated from the form factors.
-
-.. doctest::
-
-  >>> energy = gemmi.hc / 0.8  # for wavelength 0.8A
-  >>> for symbol in ['C', 'N', 'O', 'S', 'Cu']:
-  ...     el = gemmi.Element(symbol)
-  ...     fp, _ = gemmi.cromer_liberman(z=el.atomic_number, energy=energy)
-  ...     calc_x.addends.set(el, fp)
-  ...
-  >>> calc_x.addends.get(gemmi.Element('Cu'))
-  0.265503853559494
-
-Alternatively, you could call a single function (here we first need
-to remove the previous values, so it makes two functions):
-
-.. doctest::
-
-  >>> calc_x.addends.clear()
-  >>> calc_x.addends.add_cl_fprime(energy)
-
-which calculates *f'* for all elements handled by the Cromer-Liberman
-algorithm (*Z* from 3 to 92). Although it seems wasteful, it takes
-well below 1ms.
-
-Structure factors calculated at this point incorporate the addends:
-
-.. doctest::
-
-  >>> calc_x.calculate_sf_from_model(st[0], (3,4,5))  #doctest: +ELLIPSIS
-  (182.3655...+269.0002...j)
-
-Addends can also be employed to calculate the electron scattering
-from X-ray form factors, according to the Mott–Bethe formula:
-
-.. doctest::
-
-  >>> calc_x.addends.clear()
-  >>> calc_x.addends.subtract_z()
-  >>> calc_x.mott_bethe_factor() * calc_x.calculate_sf_from_model(st[0], (3,4,5))  #doctest: +ELLIPSIS
-  (54.065...+52.968...j)
-
-The next section gives slightly more details on the Mott-Bethe formula.
-
-Density for FFT
----------------
-
-To use FFT to calculate structure factors, we first need to calculate
-density of the scatterer (usually electrons) on a grid. For this we use
-
-* in C++ -- class DensityCalculator templated with a form factor table,
-* in Python -- classes DensityCalculatorX (corresponding to X-ray
-  form factors), DensityCalculatorE (electron form factors)
-  and DensityCalculatorN (neutrons).
-
-DensityCalculator contains a grid. The size of the grid is determined
-from two parameters that we need to set: `d_min` which corresponds to
-our resolution limit, and `rate` -- oversampling rate (1.5 by default).
-
-.. doctest::
-
-  >>> dencalc = gemmi.DensityCalculatorE()
-  >>> dencalc.d_min = 2.5 # 2.5A
-  >>> dencalc.rate = 1.5  # we could skip it, this is the default value
-
-All these two parameters mean is that the spacing between grid planes
-needs to be at least 2.5Å / (2 \* 1.5) = 0.67Å.
-
-As with StructureFactorCalculator, here we also have :ref:`addends <addends>`:
-
-.. doctest::
-
-  >>> dencalc.addends  #doctest: +ELLIPSIS
-  <gemmi.Addends object at 0x...>
-
-To create a grid and calculate the density we use two function calls.
-Almost all the work is in the latter:
-
-.. doctest::
-
-  >>> dencalc.grid.setup_from(st)
-  >>> dencalc.put_model_density_on_grid(st[0])
-
-Calling `put_model_density_on_grid` is equivalent to these three functions:
-
-.. doctest::
-
-  >>> dencalc.initialize_grid()
-  >>> dencalc.add_model_density_to_grid(st[0])
-  >>> dencalc.grid.symmetrize_sum()
-
-Function initialize_grid(), in this case, uses `d_min` and `rate`
-to determine required grid spacing and uses this spacing to setup the grid.
-If `d_min` would not be set and the grid size would be set, initialize_grid()
-would only zero the grid values.
-
-.. doctest::
-
-  >>> dencalc.grid
-  <gemmi.FloatGrid(48, 48, 50)>
-
-which we can transform (as described :ref:`above <fft>`)
-into a structure factor grid:
-
-.. doctest::
-
-  >>> sf_grid = gemmi.transform_map_to_f_phi(dencalc.grid)
-  >>> sf_grid
-  <gemmi.ReciprocalComplexGrid(48, 48, 50)>
-  >>> sf_grid.get_value(3, 4, 5)  #doctest: +ELLIPSIS
-  (54.5276...+53.4189...j)
-
-In addition to `d_min` and `rate`, which govern the grid density,
-DensityCalculator has two more parameters that affect accuracy
-of the calculated structure factors:
-
-* `cutoff` (default: 1e-5) -- density cut-off in the same unit as the map.
-  It is used to determine atomic radius in which the density is calculated
-  (density in the radius distance should be approximately `cutoff`).
-  Smaller cutoff means more accurate but slower calculations.
-* `blur` (default: 0) -- Gaussian dampening (blurring) factor --
-  artificial temperature factor *B*\ :sub:`extra` added to all atomic B-factors
-  (the structure factors must be later corrected to cancel it out).
-
-.. _blur:
-
-Choosing these parameters is a trade-off between efficiency and accuracy.
-*B*\ :sub:`extra` is the most interesting one.
-It is discussed in the `ITfC vol B <https://it.iucr.org/Bb/contents/>`_,
-section 1.3.4.4.5 by G. Bricogne, and further in papers by
-`J. Navaza (2002) <https://doi.org/10.1107/S0108767302016318>`_ and by
-`P. Afonine and A. Urzhumtsev (2003) <https://doi.org/10.1107/S0108767303022062>`_,
-but no formula for the optimal value exists.
-The value of *B*\ :sub:`extra` that
-gives the most accurate results depends on the resolution, oversampling,
-atomic radius cut-off, and on the distribution of B-factors
-(in particular, on the minimal B-factor in the model).
-Additionally, increasing the dampening makes the computations slower
-(because it increases atomic radius).
-
-*B*\ :sub:`extra` can be set explicitly (it can be negative):
-
-.. doctest::
-
-  >>> dencalc.blur = 10
-
-or using the formula from Refmac (which is a function of the grid spacing
-and *B*\ :sub:`min`):
-
-.. doctest::
-
-  >>> dencalc.set_refmac_compatible_blur(st[0])
-  >>> dencalc.blur
-  31.01648695048263
-
-The :ref:`sfcalc <sfcalc>` program can be used to test different choices
-of *B*\ :sub:`extra`.
-
-If the density was blurred, you need to calculate it by either
-adding option `unblur` to `prepare_asu_data()`:
-
-.. doctest::
-
-  >>> asu_data = grid.prepare_asu_data(dmin=dencalc.d_min, unblur=dencalc.blur)
-
-or multiplying individual structure factor by
-`dencalc.reciprocal_space_multiplier(inv_d2)`.
-
-Mott-Bethe formula
-~~~~~~~~~~~~~~~~~~
-
-To calculate *f*\ :sub:`e` according to the Mott-Bethe formula
-we first employ addends to calculate *f*\ :sub:`x`\ --\ *Z*:
-
-.. doctest::
-
-  >>> dc = gemmi.DensityCalculatorX()
-  >>> dc.d_min = 2.5
-  >>> dc.addends.subtract_z()
-  >>> dc.grid.setup_from(st)
-  >>> dc.set_refmac_compatible_blur(st[0])
-  >>> dc.put_model_density_on_grid(st[0])
-  >>> grid = gemmi.transform_map_to_f_phi(dc.grid)
-
-Then we multiply it by –1/(2\ *π*:sup:`2`\ *a*:sub:`0`\ *d*:sup:`2`)
-to get *f*\ :sub:`e`.
-
-We either multiply individual values by `mott_bethe_factor()`
-(which includes `reciprocal_space_multiplier()`):
-
-.. doctest::
-
-  >>> dc.mott_bethe_factor([3,4,5]) * grid.get_value(3,4,5)  #doctest: +ELLIPSIS
-  (54.063...+52.970...j)
-
-or we call `prepare_asu_data()` with `mott_bethe=True`:
-
-.. doctest::
-  :skipif: numpy is None
-
-  >>> asu_data = grid.prepare_asu_data(dmin=2.5, mott_bethe=True, unblur=dencalc.blur)
-  >>> asu_data.value_array[numpy.all(asu_data.miller_array == [3,4,5], axis=1)]  #doctest: +ELLIPSIS
-  array([54.063...+52.970...j], dtype=complex64)
-
-That is all.
-If you would like to separate positions of hydrogen nuclei
-and electron clouds then, assuming that the model
-has positions for electrons, call `subtract_z()` as:
-
-.. doctest::
-
-  >>> dc.addends.subtract_z(except_hydrogen=True)
-
-change hydrogen coordinates to proton positions
-and subtract Z=1 by adding c=-1:
-
-.. doctest::
-
-  >>> for cra in st[0].all():
-  ...     if cra.atom.is_hydrogen():
-  ...         dc.add_c_contribution_to_grid(cra.atom, -1)
-
-
-.. _scaling:
-
-Scaling and bulk solvent correction
------------------------------------
-
-Anisotropic scaling and fitting of the bulk solvent parameters are usually
-performed together. Both are implemented in the same class (Scaling),
-but it doesn't prevent you from scaling *F*\ s without any bulk solvent,
-or from calculating the bulk solvent correction without anisotropic scaling.
-
-The bulk solvent occupies significant volume of a macromolecular crystal;
-adding its contribution significantly changes structure factors.
-Usually, the bulk solvent is modelled as a flat scatterer.
-First, we create a mask of the bulk solvent, as described in
-a section about :ref:`solvent masking <solventmask>`.
-Then, we Fourier-transform the mask and obtain *F*\ :sub:`mask`.
-Usually, the solvent correction has two parameters:
-
-*F*\ :sub:`sol` = *k*\ :sub:`sol` exp(-\ *B*\ :sub:`sol` *s*\ :sup:`2`/4) *F*\ :sub:`mask`,
-
-and we also have overall anisotropic scaling parameters
-(*k*\ :sub:`ov` and **B**\ :sub:`ov`).
-All the parameters, i.e. *k*\ :sub:`ov`, **B**\ :sub:`ov`,
-*k*\ :sub:`sol` and *B*\ :sub:`sol`, or only selected ones,
-are optimized to make the total calculated structure factors *F*\ :sub:`calc`
-match the diffraction data *F*\ :sub:`obs`.
-
-TBC
-
-class Scaling
-
-.. doctest::
-
-  >>> grid = gemmi.FloatGrid()
-  >>> grid.setup_from(st, spacing=1.0)
-  >>> masker = gemmi.SolventMasker(gemmi.AtomicRadiiSet.Cctbx)
-  >>> masker.put_mask_on_float_grid(grid, st[0])
-  >>> gemmi.transform_map_to_f_phi(grid, half_l=False).prepare_asu_data(dmin=2.1)
-  <gemmi.ComplexAsuData with 1848 values>
-
